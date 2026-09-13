@@ -1,0 +1,3 @@
+[test]
+# No preload needed — each test file initialises its own in-memory DB
+# via createTestDb() from test-utils/helpers.ts
