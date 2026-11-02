@@ -77,7 +77,13 @@ export async function createPaymentMethod(
 
     const month = Number(expiry_month);
     const year  = Number(expiry_year);
-    if (month < 1 || month > 12 || year < new Date().getFullYear()) {
+    const now   = new Date();
+    const expired =
+      month < 1 ||
+      month > 12 ||
+      year < now.getFullYear() ||
+      (year === now.getFullYear() && month < now.getMonth() + 1);
+    if (expired) {
       return jsonError("Invalid expiry month or year", 422);
     }
 

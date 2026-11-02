@@ -12,8 +12,14 @@ const LS_WEBHOOK_SECRET = "pg_console_webhook_secret";
 
 export function App() {
   const [tab, setTab] = useState<Tab>("users");
-  const [apiKey, setApiKey] = useState("");
-  const [webhookSecret, setWebhookSecret] = useState("change_me_before_production");
+  const [apiKey, setApiKey] = useState(
+    () => (typeof localStorage !== "undefined" ? localStorage.getItem(LS_API_KEY) : null) ?? ""
+  );
+  const [webhookSecret, setWebhookSecret] = useState(
+    () =>
+      (typeof localStorage !== "undefined" ? localStorage.getItem(LS_WEBHOOK_SECRET) : null) ??
+      "change_me_before_production"
+  );
 
   const [users, setUsers] = useState<User[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
@@ -31,11 +37,6 @@ export function App() {
 
   const [lastResult, setLastResult] = useState<ApiCallResult | null>(null);
   const [history, setHistory] = useState<ApiCallResult[]>([]);
-
-  useEffect(() => {
-    setApiKey(localStorage.getItem(LS_API_KEY) ?? "");
-    setWebhookSecret(localStorage.getItem(LS_WEBHOOK_SECRET) ?? "change_me_before_production");
-  }, []);
 
   useEffect(() => {
     localStorage.setItem(LS_API_KEY, apiKey);

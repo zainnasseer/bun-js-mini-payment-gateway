@@ -1,8 +1,9 @@
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { getDb } from "../db/database";
 import { transactions, TRANSACTION_STATUSES } from "../db/schema";
 import { signPayload, safeCompare } from "../lib/crypto";
 import { jsonOk, jsonError, jsonInternalError } from "../lib/http";
+import { parseTransactionMetadata } from "../lib/metadata";
 import type { TransactionStatus } from "../types";
 
 const WEBHOOK_VALID_STATUSES: TransactionStatus[] = ["AUTHORIZED", "CAPTURED", "FAILED"];
@@ -61,33 +62,54 @@ export async function handleProcessorWebhook(req: Request): Promise<Response> {
       return jsonError(`Invalid status for webhook. Must be one of: ${WEBHOOK_VALID_STATUSES.join(", ")}`, 422);
     }
 
-    const db     = getDb();
-    const record = await db.select().from(transactions).where(eq(transactions.id, String(transaction_id))).get();
-    if (!record) return jsonError("Transaction not found", 404);
+    const txId = String(transaction_id);
+    const nextStatus = status as TransactionStatus;
 
-    if (!ALLOWED_TRANSITIONS[record.status].includes(status as TransactionStatus)) {
-      return jsonError(`Invalid transition: ${record.status} → ${status}`, 422);
-    }
+    const updated = await getDb().transaction(async (tx) => {
+      const record = await tx.select().from(transactions).where(eq(transactions.id, txId)).get();
+      if (!record) throw new Error("TX_NOT_FOUND");
 
-    const existingMeta = record.metadata ? JSON.parse(record.metadata) : {};
-    const updatedMeta  = JSON.stringify({
-      ...existingMeta,
-      processor: {
-        reference:    processor_ref ?? null,
-        processed_at: new Date().toISOString(),
-        ...(failure_reason ? { failure_reason } : {}),
-      },
+      const fromStatus = record.status;
+      if (!ALLOWED_TRANSITIONS[fromStatus].includes(nextStatus)) {
+        throw new Error(`INVALID_TRANSITION:${fromStatus}:${nextStatus}`);
+      }
+
+      const existingMeta = parseTransactionMetadata(record.metadata);
+      const updatedMeta  = JSON.stringify({
+        ...existingMeta,
+        processor: {
+          reference:    processor_ref ?? null,
+          processed_at: new Date().toISOString(),
+          ...(failure_reason ? { failure_reason } : {}),
+        },
+      });
+
+      const [row] = await tx
+        .update(transactions)
+        .set({ status: nextStatus, metadata: updatedMeta, updatedAt: new Date().toISOString() })
+        .where(and(eq(transactions.id, txId), eq(transactions.status, fromStatus)))
+        .returning();
+
+      if (!row) throw new Error("STATUS_CONFLICT");
+      return row;
     });
-
-    const [updated] = await db
-      .update(transactions)
-      .set({ status: status as TransactionStatus, metadata: updatedMeta, updatedAt: new Date().toISOString() })
-      .where(eq(transactions.id, String(transaction_id)))
-      .returning();
 
     console.log(`[Webhook] Transaction ${transaction_id} → ${status}`);
     return jsonOk({ received: true, transaction: updated });
   } catch (err) {
+    if (err instanceof Error) {
+      if (err.message === "TX_NOT_FOUND") return jsonError("Transaction not found", 404);
+      if (err.message.startsWith("INVALID_TRANSITION:")) {
+        const [, from, to] = err.message.split(":");
+        return jsonError(`Invalid transition: ${from} → ${to}`, 422);
+      }
+      if (err.message === "STATUS_CONFLICT") {
+        return jsonError("Transaction status changed concurrently; retry webhook", 409);
+      }
+      if (err.message === "INVALID_METADATA") {
+        return jsonError("Transaction metadata is not valid JSON", 422);
+      }
+    }
     return jsonInternalError(err);
   }
 }

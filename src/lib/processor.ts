@@ -1,6 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import { getDb } from "../db/database";
 import { transactions } from "../db/schema";
+import { parseTransactionMetadataLenient } from "./metadata";
 
 const DEFAULT_PROCESSOR_DELAY_MS = 3000;
 const DEFAULT_SUCCESS_RATE       = 0.85;
@@ -39,7 +40,7 @@ export function submitToProcessor(transactionId: string): void {
         ? undefined
         : FAILURE_REASONS[Math.floor(Math.random() * FAILURE_REASONS.length)];
 
-      const existingMeta = record.metadata ? JSON.parse(record.metadata) : {};
+      const existingMeta = parseTransactionMetadataLenient(record.metadata);
       const updatedMeta  = JSON.stringify({
         ...existingMeta,
         processor: {

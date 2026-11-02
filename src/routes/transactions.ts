@@ -12,6 +12,8 @@ import {
   validateRequiredFields,
 } from "../lib/http";
 import { submitToProcessor } from "../lib/processor";
+import { isSqliteUniqueViolation } from "../lib/sqliteErrors";
+import { parseTransactionMetadata } from "../lib/metadata";
 import type { CreateTransactionPayload, TransactionStatus } from "../types";
 
 // ─── State machine ─────────────────────────────────────────────────────────────
@@ -149,22 +151,34 @@ export async function createTransaction(req: Request): Promise<Response> {
 
       if (!pm) throw new Error("PM_NOT_FOUND");
 
-      // 4. Insert
-      const [inserted] = await tx
-        .insert(transactions)
-        .values({
-          id:              generateId(),
-          userId:          user_id,
-          paymentMethodId: payment_method_id,
-          idempotencyKey:  idempotencyKey,
-          amount,
-          currency:        currency as (typeof CURRENCY_CODES)[number],
-          description:     description ?? null,
-          metadata:        metadata ? JSON.stringify(metadata) : null,
-        })
-        .returning();
+      // 4. Insert (concurrent duplicate keys → unique violation → replay)
+      try {
+        const [inserted] = await tx
+          .insert(transactions)
+          .values({
+            id:              generateId(),
+            userId:          user_id,
+            paymentMethodId: payment_method_id,
+            idempotencyKey:  idempotencyKey,
+            amount,
+            currency:        currency as (typeof CURRENCY_CODES)[number],
+            description:     description ?? null,
+            metadata:        metadata ? JSON.stringify(metadata) : null,
+          })
+          .returning();
 
-      return inserted;
+        return inserted;
+      } catch (insertErr) {
+        if (!isSqliteUniqueViolation(insertErr)) throw insertErr;
+        isReplay = true;
+        const replay = await tx
+          .select()
+          .from(transactions)
+          .where(eq(transactions.idempotencyKey, idempotencyKey))
+          .get();
+        if (!replay) throw insertErr;
+        return replay;
+      }
     });
 
     if (isReplay) return jsonOk(transaction!);
@@ -236,7 +250,7 @@ export async function refundTransaction(
       if (!record) throw new Error("TX_NOT_FOUND");
       if (record.status !== "CAPTURED") throw new Error(`INVALID_STATUS:${record.status}`);
 
-      const existingMeta = record.metadata ? JSON.parse(record.metadata) : {};
+      const existingMeta = parseTransactionMetadata(record.metadata);
       const updatedMeta  = JSON.stringify({
         ...existingMeta,
         refund: { reason, refunded_at: new Date().toISOString() },
@@ -258,6 +272,9 @@ export async function refundTransaction(
       if (err.message.startsWith("INVALID_STATUS:")) {
         const current = err.message.split(":")[1];
         return jsonError(`Only CAPTURED transactions can be refunded. Current status: ${current}`, 422);
+      }
+      if (err.message === "INVALID_METADATA") {
+        return jsonError("Transaction metadata is not valid JSON", 422);
       }
     }
     return jsonInternalError(err);
