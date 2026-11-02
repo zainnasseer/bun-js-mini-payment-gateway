@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "../db/database";
 import { users } from "../db/schema";
 import { generateId } from "../lib/crypto";
+import { firstRow } from "../lib/dbQuery";
 import {
   jsonOk,
   jsonCreated,
@@ -30,11 +31,9 @@ export async function getUser(
   req: Request & { params: { id: string } }
 ): Promise<Response> {
   try {
-    const user = await getDb()
-      .select()
-      .from(users)
-      .where(eq(users.id, req.params.id))
-      .get();
+    const user = await firstRow(
+      getDb().select().from(users).where(eq(users.id, req.params.id)).limit(1)
+    );
 
     if (!user) return jsonNotFound("User");
     return jsonOk(user);
@@ -64,11 +63,9 @@ export async function createUser(req: Request): Promise<Response> {
 
     const db = getDb();
 
-    const existing = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, email))
-      .get();
+    const existing = await firstRow(
+      db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1)
+    );
 
     if (existing) return jsonError("A user with this email already exists", 409);
 

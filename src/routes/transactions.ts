@@ -12,7 +12,8 @@ import {
   validateRequiredFields,
 } from "../lib/http";
 import { submitToProcessor } from "../lib/processor";
-import { isSqliteUniqueViolation } from "../lib/sqliteErrors";
+import { isUniqueViolation } from "../lib/dbErrors";
+import { firstRow } from "../lib/dbQuery";
 import { parseTransactionMetadata } from "../lib/metadata";
 import type { CreateTransactionPayload, TransactionStatus } from "../types";
 
@@ -69,11 +70,9 @@ export async function getTransaction(
   req: Request & { params: { id: string } }
 ): Promise<Response> {
   try {
-    const tx = await getDb()
-      .select()
-      .from(transactions)
-      .where(eq(transactions.id, req.params.id))
-      .get();
+    const tx = await firstRow(
+      getDb().select().from(transactions).where(eq(transactions.id, req.params.id)).limit(1)
+    );
 
     if (!tx) return jsonNotFound("Transaction");
     return jsonOk(tx);
@@ -122,11 +121,13 @@ export async function createTransaction(req: Request): Promise<Response> {
 
     const transaction = await getDb().transaction(async (tx) => {
       // 1. Idempotency check
-      const existing = await tx
-        .select()
-        .from(transactions)
-        .where(eq(transactions.idempotencyKey, idempotencyKey))
-        .get();
+      const existing = await firstRow(
+        tx
+          .select()
+          .from(transactions)
+          .where(eq(transactions.idempotencyKey, idempotencyKey))
+          .limit(1)
+      );
 
       if (existing) {
         isReplay = true;
@@ -134,20 +135,20 @@ export async function createTransaction(req: Request): Promise<Response> {
       }
 
       // 2. Verify user
-      const user = await tx
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.id, user_id))
-        .get();
+      const user = await firstRow(
+        tx.select({ id: users.id }).from(users).where(eq(users.id, user_id)).limit(1)
+      );
 
       if (!user) throw new Error("USER_NOT_FOUND");
 
       // 3. Verify payment method belongs to user
-      const pm = await tx
-        .select({ id: paymentMethods.id })
-        .from(paymentMethods)
-        .where(and(eq(paymentMethods.id, payment_method_id), eq(paymentMethods.userId, user_id)))
-        .get();
+      const pm = await firstRow(
+        tx
+          .select({ id: paymentMethods.id })
+          .from(paymentMethods)
+          .where(and(eq(paymentMethods.id, payment_method_id), eq(paymentMethods.userId, user_id)))
+          .limit(1)
+      );
 
       if (!pm) throw new Error("PM_NOT_FOUND");
 
@@ -169,13 +170,15 @@ export async function createTransaction(req: Request): Promise<Response> {
 
         return inserted;
       } catch (insertErr) {
-        if (!isSqliteUniqueViolation(insertErr)) throw insertErr;
+        if (!isUniqueViolation(insertErr)) throw insertErr;
         isReplay = true;
-        const replay = await tx
-          .select()
-          .from(transactions)
-          .where(eq(transactions.idempotencyKey, idempotencyKey))
-          .get();
+        const replay = await firstRow(
+          tx
+            .select()
+            .from(transactions)
+            .where(eq(transactions.idempotencyKey, idempotencyKey))
+            .limit(1)
+        );
         if (!replay) throw insertErr;
         return replay;
       }
@@ -209,12 +212,14 @@ export async function updateTransactionStatus(
     }
 
     const db = getDb();
-    const tx = await db.select().from(transactions).where(eq(transactions.id, req.params.id)).get();
+    const tx = await firstRow(
+      db.select().from(transactions).where(eq(transactions.id, req.params.id)).limit(1)
+    );
     if (!tx) return jsonNotFound("Transaction");
 
-    if (!ALLOWED_TRANSITIONS[tx.status].includes(status)) {
+    if (!ALLOWED_TRANSITIONS[tx.status as TransactionStatus].includes(status)) {
       return jsonError(
-        `Invalid transition: ${tx.status} → ${status}. Allowed: ${ALLOWED_TRANSITIONS[tx.status].join(", ") || "none"}`,
+        `Invalid transition: ${tx.status} → ${status}. Allowed: ${ALLOWED_TRANSITIONS[tx.status as TransactionStatus].join(", ") || "none"}`,
         422
       );
     }
@@ -241,11 +246,9 @@ export async function refundTransaction(
     const reason = body?.reason ?? "Refund requested";
 
     const updated = await getDb().transaction(async (tx) => {
-      const record = await tx
-        .select()
-        .from(transactions)
-        .where(eq(transactions.id, req.params.id))
-        .get();
+      const record = await firstRow(
+        tx.select().from(transactions).where(eq(transactions.id, req.params.id)).limit(1)
+      );
 
       if (!record) throw new Error("TX_NOT_FOUND");
       if (record.status !== "CAPTURED") throw new Error(`INVALID_STATUS:${record.status}`);

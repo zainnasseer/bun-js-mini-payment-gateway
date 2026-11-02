@@ -2,6 +2,7 @@ import { eq, and } from "drizzle-orm";
 import { getDb } from "../db/database";
 import { transactions } from "../db/schema";
 import { parseTransactionMetadataLenient } from "./metadata";
+import { firstRow } from "./dbQuery";
 
 const DEFAULT_PROCESSOR_DELAY_MS = 3000;
 const DEFAULT_SUCCESS_RATE       = 0.85;
@@ -22,11 +23,13 @@ export function submitToProcessor(transactionId: string): void {
     try {
       const db = getDb();
 
-      const record = await db
-        .select()
-        .from(transactions)
-        .where(and(eq(transactions.id, transactionId), eq(transactions.status, "PENDING")))
-        .get();
+      const record = await firstRow(
+        db
+          .select()
+          .from(transactions)
+          .where(and(eq(transactions.id, transactionId), eq(transactions.status, "PENDING")))
+          .limit(1)
+      );
 
       if (!record) {
         console.log(`[Processor] ${transactionId} no longer PENDING — skipping.`);

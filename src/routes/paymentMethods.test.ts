@@ -1,10 +1,6 @@
 import { test, expect, describe, beforeAll } from "bun:test";
-
-process.env.DATABASE_URL = ":memory:";
-process.env.NODE_ENV = "test";
-
 import { json, post, reqWithParams } from "../../src/test-utils/helpers";
-import { applyTestSchema } from "../../src/db/database";
+import { setupIntegrationTests } from "../../src/test-utils/db";
 import { createUser } from "../../src/routes/users";
 import {
   listPaymentMethods,
@@ -14,7 +10,9 @@ import {
 import { createTransaction, getTransaction } from "../../src/routes/transactions";
 import type { ApiResponse, User, PaymentMethod, Transaction } from "../../src/types";
 
-beforeAll(() => applyTestSchema());
+beforeAll(async () => {
+  await setupIntegrationTests();
+});
 
 const NEXT_YEAR = new Date().getFullYear() + 1;
 

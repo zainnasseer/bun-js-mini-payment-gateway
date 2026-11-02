@@ -37,6 +37,34 @@ export function App() {
 
   const [lastResult, setLastResult] = useState<ApiCallResult | null>(null);
   const [history, setHistory] = useState<ApiCallResult[]>([]);
+  const [publicDemo, setPublicDemo] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/public/demo-console");
+        if (!res.ok) return;
+        const body = (await res.json()) as {
+          success?: boolean;
+          data?: { demoMode?: boolean; apiKey?: string; webhookSecret?: string; message?: string };
+        };
+        if (cancelled || !body.success || !body.data?.demoMode || !body.data.apiKey) return;
+        setPublicDemo(true);
+        setApiKey((prev) => prev || body.data!.apiKey!);
+        if (body.data.webhookSecret) {
+          setWebhookSecret((prev) =>
+            prev === "change_me_before_production" ? body.data!.webhookSecret! : prev
+          );
+        }
+      } catch {
+        /* private deploy — no public demo */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(LS_API_KEY, apiKey);
@@ -363,8 +391,19 @@ export function App() {
           </label>
         </div>
         <p className="hint">
-          Matches server env vars <code>API_KEY</code> and <code>WEBHOOK_SECRET</code>. Responses appear
-          on the right with HTTP status and <code>{`{ success, data | error }`}</code> envelope.
+          {publicDemo ? (
+            <>
+              <strong>Public demo:</strong> shared sandbox credentials were loaded automatically (see fields
+              above). Anyone visiting this site can call the API — use fake data only.
+            </>
+          ) : (
+            <>
+              Matches server env vars <code>API_KEY</code> and <code>WEBHOOK_SECRET</code>. On a private
+              production deploy, ask the owner for the key or enable <code>PUBLIC_DEMO_MODE</code>.
+            </>
+          )}{" "}
+          Responses appear on the right with HTTP status and{" "}
+          <code>{`{ success, data | error }`}</code> envelope.
         </p>
       </section>
 

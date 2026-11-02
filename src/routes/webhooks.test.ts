@@ -1,12 +1,10 @@
 import { test, expect, describe, beforeAll } from "bun:test";
 
-process.env.DATABASE_URL = ":memory:";
-process.env.NODE_ENV = "test";
 process.env.WEBHOOK_SECRET = "test_webhook_secret_key";
 process.env.PROCESSOR_DELAY_MS = "50000";
 
 import { json, post, reqWithParams } from "../../src/test-utils/helpers";
-import { applyTestSchema } from "../../src/db/database";
+import { setupIntegrationTests } from "../../src/test-utils/db";
 import { createUser } from "../../src/routes/users";
 import { createPaymentMethod } from "../../src/routes/paymentMethods";
 import { createTransaction } from "../../src/routes/transactions";
@@ -14,7 +12,9 @@ import { handleProcessorWebhook } from "../../src/routes/webhooks";
 import { signPayload, generateIdempotencyKey } from "../../src/lib/crypto";
 import type { ApiResponse, User, PaymentMethod, Transaction } from "../../src/types";
 
-beforeAll(() => applyTestSchema());
+beforeAll(async () => {
+  await setupIntegrationTests();
+});
 
 const NEXT_YEAR = new Date().getFullYear() + 1;
 

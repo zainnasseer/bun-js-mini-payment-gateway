@@ -4,6 +4,7 @@ import { transactions, TRANSACTION_STATUSES } from "../db/schema";
 import { signPayload, safeCompare } from "../lib/crypto";
 import { jsonOk, jsonError, jsonInternalError } from "../lib/http";
 import { parseTransactionMetadata } from "../lib/metadata";
+import { firstRow } from "../lib/dbQuery";
 import type { TransactionStatus } from "../types";
 
 const WEBHOOK_VALID_STATUSES: TransactionStatus[] = ["AUTHORIZED", "CAPTURED", "FAILED"];
@@ -66,10 +67,12 @@ export async function handleProcessorWebhook(req: Request): Promise<Response> {
     const nextStatus = status as TransactionStatus;
 
     const updated = await getDb().transaction(async (tx) => {
-      const record = await tx.select().from(transactions).where(eq(transactions.id, txId)).get();
+      const record = await firstRow(
+        tx.select().from(transactions).where(eq(transactions.id, txId)).limit(1)
+      );
       if (!record) throw new Error("TX_NOT_FOUND");
 
-      const fromStatus = record.status;
+      const fromStatus = record.status as TransactionStatus;
       if (!ALLOWED_TRANSITIONS[fromStatus].includes(nextStatus)) {
         throw new Error(`INVALID_TRANSITION:${fromStatus}:${nextStatus}`);
       }

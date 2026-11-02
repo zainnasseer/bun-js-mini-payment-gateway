@@ -12,6 +12,7 @@ import {
   refundTransaction,
 } from "./routes/transactions";
 import { handleProcessorWebhook } from "./routes/webhooks";
+import { getDemoConsoleConfig } from "./routes/publicDemo";
 import { runMiddleware } from "./middleware";
 import { jsonOk, jsonError } from "./lib/http";
 import index from "../index.html";
@@ -46,13 +47,18 @@ function withMiddleware(handler: RouteHandler): RouteHandler {
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
+const isDev = process.env.NODE_ENV !== "production";
+
 const server = Bun.serve({
+  hostname: "0.0.0.0",
   port: PORT,
 
-  development: {
-    hmr: true,
-    console: true,
-  },
+  development: isDev
+    ? {
+        hmr: true,
+        console: true,
+      }
+    : undefined,
 
   routes: {
     "/": index,
@@ -71,6 +77,10 @@ const server = Bun.serve({
           headers: { "Content-Type": "application/yaml; charset=utf-8" },
         });
       }),
+    },
+
+    "/api/public/demo-console": {
+      GET: withMiddleware(() => getDemoConsoleConfig()),
     },
 
     // ── Users ──────────────────────────────────────────────────────────────────
@@ -129,6 +139,6 @@ serverRef = server;
 console.log(`🚀 Payment Gateway  →  http://localhost:${server.port}`);
 console.log(`   UI:    http://localhost:${server.port}/`);
 console.log(`   Mode:  ${process.env.NODE_ENV ?? "development"}`);
-console.log(`   DB:    ${process.env.DATABASE_URL ?? "./data/payment_gateway.db"}`);
+console.log(`   DB:    ${process.env.DATABASE_URL ? "PostgreSQL (DATABASE_URL)" : "(DATABASE_URL not set)"}`);
 
 export default server;

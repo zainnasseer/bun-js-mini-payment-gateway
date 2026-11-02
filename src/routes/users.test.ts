@@ -1,14 +1,12 @@
 import { test, expect, describe, beforeAll } from "bun:test";
-
-process.env.DATABASE_URL = ":memory:";
-process.env.NODE_ENV = "test";
-
 import { json, post, get, reqWithParams } from "../../src/test-utils/helpers";
-import { applyTestSchema } from "../../src/db/database";
+import { setupIntegrationTests } from "../../src/test-utils/db";
 import { listUsers, getUser, createUser } from "../../src/routes/users";
 import type { ApiResponse, User } from "../../src/types";
 
-beforeAll(() => applyTestSchema());
+beforeAll(async () => {
+  await setupIntegrationTests();
+});
 
 // ─── POST /users ──────────────────────────────────────────────────────────────
 

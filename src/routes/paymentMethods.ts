@@ -2,6 +2,7 @@ import { eq, and, desc } from "drizzle-orm";
 import { getDb } from "../db/database";
 import { users, paymentMethods, PAYMENT_METHOD_TYPES } from "../db/schema";
 import { generateId } from "../lib/crypto";
+import { firstRow } from "../lib/dbQuery";
 import {
   jsonOk,
   jsonCreated,
@@ -21,11 +22,9 @@ export async function listPaymentMethods(
   try {
     const db = getDb();
 
-    const user = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.id, req.params.userId))
-      .get();
+    const user = await firstRow(
+      db.select({ id: users.id }).from(users).where(eq(users.id, req.params.userId)).limit(1)
+    );
 
     if (!user) return jsonNotFound("User");
 
@@ -89,19 +88,19 @@ export async function createPaymentMethod(
 
     // Atomic: default swap + insert
     const method = await getDb().transaction(async (tx) => {
-      const user = await tx
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.id, req.params.userId))
-        .get();
+      const user = await firstRow(
+        tx.select({ id: users.id }).from(users).where(eq(users.id, req.params.userId)).limit(1)
+      );
 
       if (!user) return null;
 
-      const existingToken = await tx
-        .select({ id: paymentMethods.id })
-        .from(paymentMethods)
-        .where(eq(paymentMethods.tokenId, String(token_id)))
-        .get();
+      const existingToken = await firstRow(
+        tx
+          .select({ id: paymentMethods.id })
+          .from(paymentMethods)
+          .where(eq(paymentMethods.tokenId, String(token_id)))
+          .limit(1)
+      );
 
       if (existingToken) throw new Error("DUPLICATE_TOKEN");
 
@@ -148,16 +147,18 @@ export async function deletePaymentMethod(
   try {
     const db = getDb();
 
-    const method = await db
-      .select()
-      .from(paymentMethods)
-      .where(
-        and(
-          eq(paymentMethods.id,     req.params.methodId),
-          eq(paymentMethods.userId, req.params.userId)
+    const method = await firstRow(
+      db
+        .select()
+        .from(paymentMethods)
+        .where(
+          and(
+            eq(paymentMethods.id, req.params.methodId),
+            eq(paymentMethods.userId, req.params.userId)
+          )
         )
-      )
-      .get();
+        .limit(1)
+    );
 
     if (!method) return jsonNotFound("Payment method");
 

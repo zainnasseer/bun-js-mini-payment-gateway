@@ -2,5 +2,10 @@ node_modules
 data/
 *.log
 .env
+.env.*
 .git
 .DS_Store
+.cursor
+.agents
+*.md
+!README.md
