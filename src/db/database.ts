@@ -93,3 +93,9 @@ export function applyTestSchema(): void {
   getDb();
   _sqlite!.exec(TEST_DDL);
 }
+
+/** Applies CREATE TABLE IF NOT EXISTS DDL — safe for fresh Docker / VPS deploys. */
+export function initSchema(): void {
+  getDb();
+  _sqlite!.exec(TEST_DDL);
+}

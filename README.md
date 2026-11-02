@@ -1,20 +1,65 @@
 # Payment Gateway API (Bun + Drizzle ORM + SQLite)
 
-A lightweight, high-performance payment gateway built with **Bun.js** native `Bun.serve()` and **Drizzle ORM** (`bun:sqlite`), strictly following REST, PCI-DSS compliance, idempotency, and atomic transaction guarantees.
+A lightweight, production-style **payment gateway REST API** built with **Bun** (`Bun.serve()`), **Drizzle ORM**, and **SQLite** — designed as a portfolio backend showcasing fintech patterns recruiters care about.
+
+**Highlights (CV / interview talking points)**
+
+| Area | What this repo demonstrates |
+|------|-----------------------------|
+| Payments | Idempotent `POST /transactions`, integer money (cents), ISO 4217 currencies |
+| Reliability | SQLite transactions for idempotency + refunds; explicit transaction state machine |
+| Security | API key auth, timing-safe compares, HMAC webhook verification, PCI-style token-only cards |
+| Ops | Docker, health checks, structured middleware (rate limit, request ID, logging) |
+| Quality | 78+ automated tests, TypeScript strict mode, OpenAPI spec at `/openapi.yaml` |
+
+**Stack:** Bun 1.x · TypeScript · Drizzle ORM · `bun:sqlite` · in-memory rate limiter (Redis-ready note in code)
+
+**API contract:** [openapi.yaml](./openapi.yaml) (also served at `GET /openapi.yaml`)
+
+---
+
+## Architecture
+
+```text
+Client ──► Middleware (request ID → log → rate limit → API key → JSON guard)
+              │
+              ▼
+         Route handlers (users / payment methods / transactions / webhooks)
+              │
+              ▼
+         Drizzle ORM ──► SQLite (WAL, foreign keys)
+              │
+              ▼
+         Simulated processor (async status updates) + HMAC webhook callbacks
+```
 
 ---
 
 ## 🚀 Quick Start (Local Development)
+
+Copy environment defaults (Bun loads `.env` automatically):
+
+```bash
+cp .env.example .env
+```
 
 ### 1. Install Dependencies
 ```bash
 bun install
 ```
 
-### 2. Push Schema to Database
-Synchronize the TypeScript schema directly to SQLite using Drizzle Kit:
+### 2. Initialize Database Schema
+
+**Local development (Drizzle Kit — keeps TS schema in sync):**
+
 ```bash
 bun run db:push
+```
+
+**Production / Docker (no devDependencies):**
+
+```bash
+bun run db:init
 ```
 
 ### 3. Start the Server
@@ -23,6 +68,10 @@ bun run dev      # Hot reload enabled on http://localhost:3000
 # or
 bun run start    # Standard production mode
 ```
+
+Open the **Developer Console** in your browser (interactive UI for the full payment flow, error scenarios, and live API envelopes):
+
+**http://localhost:3000/**
 
 ---
 
@@ -54,10 +103,17 @@ bun run dev
 
 ### Manual `curl` Commands
 
+In **production**, set `API_KEY` and pass it on every API route:
+
+```bash
+export API_KEY="your_secure_api_key"   # also set in .env for local prod-like testing
+```
+
 #### 1. Create a User
 ```bash
 curl -i -X POST http://localhost:3000/api/v1/users \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: ${API_KEY:-dev-optional}" \
   -d '{"email": "jane@example.com", "name": "Jane Doe"}'
 ```
 

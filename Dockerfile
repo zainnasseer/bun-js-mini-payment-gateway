@@ -23,5 +23,5 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV DATABASE_URL=/app/data/payment_gateway.db
 
-# Run database push on startup, then launch the gateway server
-CMD ["sh", "-c", "bun run db:push && bun start"]
+# Bootstrap schema (no devDependency drizzle-kit), then launch the gateway
+CMD ["sh", "-c", "bun run src/db/init.ts && bun start"]

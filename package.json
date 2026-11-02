@@ -1,9 +1,12 @@
 {
-  "name": "pg1",
+  "name": "payment-gateway-api",
+  "version": "1.0.0",
+  "description": "REST payment gateway with idempotency, HMAC webhooks, and PCI-aware token storage (Bun + Drizzle + SQLite)",
   "module": "index.ts",
   "type": "module",
   "private": true,
   "scripts": {
+    "db:init": "bun run src/db/init.ts",
     "dev": "bun --hot index.ts",
     "start": "bun index.ts",
     "test": "bun test",
@@ -15,12 +18,16 @@
   "devDependencies": {
     "@libsql/client": "^0.18.0",
     "@types/bun": "latest",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "drizzle-kit": "^0.31.10"
   },
   "peerDependencies": {
     "typescript": "^7"
   },
   "dependencies": {
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   }
 }

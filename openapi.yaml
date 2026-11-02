@@ -1,0 +1,278 @@
+openapi: 3.0.3
+info:
+  title: Payment Gateway API
+  version: 1.0.0
+  description: |
+    REST payment gateway (Bun + Drizzle + SQLite). Amounts are integer smallest currency units (cents).
+    Production requests require `X-API-Key`. Payment creation requires `Idempotency-Key` (UUID v4).
+servers:
+  - url: http://localhost:3000
+    description: Local development
+tags:
+  - name: System
+  - name: Users
+  - name: Payment Methods
+  - name: Transactions
+  - name: Webhooks
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Liveness probe
+      responses:
+        "200":
+          description: Service healthy
+  /openapi.yaml:
+    get:
+      tags: [System]
+      summary: OpenAPI specification
+      responses:
+        "200":
+          description: YAML spec
+  /api/v1/users:
+    get:
+      tags: [Users]
+      summary: List users
+      security: [{ ApiKeyAuth: [] }]
+      responses:
+        "200":
+          description: User list
+    post:
+      tags: [Users]
+      summary: Create user
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+      responses:
+        "201":
+          description: Created
+        "409":
+          description: Duplicate email
+  /api/v1/users/{id}:
+    get:
+      tags: [Users]
+      summary: Get user by ID
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: User
+        "404":
+          description: Not found
+  /api/v1/users/{userId}/payment-methods:
+    get:
+      tags: [Payment Methods]
+      summary: List payment methods for user
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Payment methods
+    post:
+      tags: [Payment Methods]
+      summary: Register tokenized payment method (no PAN/CVV)
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, token_id, last_four, expiry_month, expiry_year]
+              properties:
+                type:
+                  type: string
+                  enum: [CARD, BANK_ACCOUNT, DIGITAL_WALLET]
+                token_id: { type: string }
+                last_four: { type: string, pattern: "^\\d{4}$" }
+                expiry_month: { type: integer, minimum: 1, maximum: 12 }
+                expiry_year: { type: integer }
+                is_default: { type: boolean }
+      responses:
+        "201":
+          description: Created
+        "400":
+          description: PCI violation (raw card data)
+  /api/v1/users/{userId}/payment-methods/{methodId}:
+    delete:
+      tags: [Payment Methods]
+      summary: Delete payment method
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: methodId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Deleted
+  /api/v1/transactions:
+    get:
+      tags: [Transactions]
+      summary: List transactions
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: user_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, AUTHORIZED, CAPTURED, FAILED, REFUNDED]
+        - name: limit
+          in: query
+          schema: { type: integer, maximum: 100, default: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Paginated transactions
+    post:
+      tags: [Transactions]
+      summary: Create idempotent charge
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, payment_method_id, amount, currency]
+              properties:
+                user_id: { type: string, format: uuid }
+                payment_method_id: { type: string, format: uuid }
+                amount: { type: integer, minimum: 1 }
+                currency:
+                  type: string
+                  enum: [USD, EUR, GBP, JPY, AED, SAR]
+                description: { type: string }
+                metadata: { type: object }
+      responses:
+        "201":
+          description: New transaction
+        "200":
+          description: Idempotent replay (same key)
+  /api/v1/transactions/{id}:
+    get:
+      tags: [Transactions]
+      summary: Get transaction
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Transaction
+  /api/v1/transactions/{id}/status:
+    patch:
+      tags: [Transactions]
+      summary: Update status (state machine enforced)
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [PENDING, AUTHORIZED, CAPTURED, FAILED, REFUNDED]
+      responses:
+        "200":
+          description: Updated
+        "422":
+          description: Invalid transition
+  /api/v1/transactions/{id}/refund:
+    post:
+      tags: [Transactions]
+      summary: Refund captured transaction
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: Refunded
+  /webhooks/processor:
+    post:
+      tags: [Webhooks]
+      summary: Processor callback (HMAC-SHA256)
+      parameters:
+        - name: X-Webhook-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transaction_id, status]
+              properties:
+                transaction_id: { type: string, format: uuid }
+                status:
+                  type: string
+                  enum: [AUTHORIZED, CAPTURED, FAILED]
+                processor_ref: { type: string }
+      responses:
+        "200":
+          description: Accepted
+        "401":
+          description: Invalid signature
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key

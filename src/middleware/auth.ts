@@ -7,18 +7,12 @@ import { safeCompare } from "../lib/crypto";
  * Reads the `X-API-Key` header and compares it timing-safely against
  * the `API_KEY` environment variable.
  *
- * Routes exempt from auth:
- *   - GET  /health
- *   - POST /webhooks/*   (webhook signature is its own auth mechanism)
+ * Only `/api/v1/*` requires an API key. Static UI, health, OpenAPI, and
+ * webhooks (HMAC) are exempt.
  */
 
-
-
-// Paths exempt from API key requirement
-const EXEMPT_PREFIXES = ["/health", "/webhooks/"];
-
-function isExempt(pathname: string): boolean {
-  return EXEMPT_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+function requiresApiKey(pathname: string): boolean {
+  return pathname.startsWith("/api/v1/");
 }
 
 /**
@@ -27,7 +21,7 @@ function isExempt(pathname: string): boolean {
  */
 export function authCheck(req: Request): Response | null {
   const url = new URL(req.url);
-  if (isExempt(url.pathname)) return null;
+  if (!requiresApiKey(url.pathname)) return null;
 
   const apiKey = process.env.API_KEY ?? "";
 

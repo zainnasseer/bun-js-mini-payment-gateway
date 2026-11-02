@@ -1,12 +1,13 @@
 /**
  * Middleware pipeline — composes all middleware in correct order.
  *
- * Execution order (each returns a Response | null):
- *   1. Request ID injection   (always runs, no blocking)
- *   2. Rate limiter           (blocks → 429)
- *   3. Auth check             (blocks → 401)
- *   4. Content-Type guard     (blocks → 415)
- *   5. Request logger         (wraps response after handler returns)
+ * Execution order:
+ *   1. Request ID injection   (always runs)
+ *   2. Request logger         (starts timer; completes after handler)
+ *   3. Rate limiter           (blocks → 429)
+ *   4. Auth check             (blocks → 401)
+ *   5. Content-Type guard     (blocks → 415)
+ *   6. Route handler          (try/catch → 500)
  *
  * Usage in Bun.serve() fetch fallback:
  *
@@ -40,7 +41,7 @@ import { authCheck } from "./auth";
  */
 export async function runMiddleware(
   req: Request,
-  server: { requestIP?: (req: Request) => string | null } | null,
+  server: { requestIP?: (req: Request) => { address: string } | null } | null,
   next: () => Response | Promise<Response>
 ): Promise<Response> {
   // 1. Request ID — must come first so all subsequent steps can log it
@@ -50,7 +51,7 @@ export async function runMiddleware(
   const logDone = logRequest(req, requestId);
 
   // 3. Rate limiter
-  const ip = server?.requestIP?.(req) ?? undefined;
+  const ip = server?.requestIP?.(req)?.address;
   const rateLimitRes = rateLimitCheck(req, ip);
   if (rateLimitRes) {
     const res = attachRequestId(rateLimitRes, requestId);

@@ -14,6 +14,7 @@ import {
 import { handleProcessorWebhook } from "./routes/webhooks";
 import { runMiddleware } from "./middleware";
 import { jsonOk, jsonError } from "./lib/http";
+import index from "../index.html";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -33,11 +34,13 @@ const PORT = Number(process.env.PORT ?? 3000);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type RouteHandler = (req: Request & { params: any }) => Response | Promise<Response>;
 
+type BunServer = { requestIP?: (req: Request) => { address: string } | null };
+
+let serverRef: BunServer | null = null;
+
 function withMiddleware(handler: RouteHandler): RouteHandler {
   return async (req) => {
-    // Bun.serve() route handlers don't expose the server object, so we
-    // pass null for IP resolution — rateLimiter falls back to X-Forwarded-For.
-    return runMiddleware(req, null, () => handler(req));
+    return runMiddleware(req, serverRef, () => handler(req));
   };
 }
 
@@ -46,12 +49,28 @@ function withMiddleware(handler: RouteHandler): RouteHandler {
 const server = Bun.serve({
   port: PORT,
 
+  development: {
+    hmr: true,
+    console: true,
+  },
+
   routes: {
+    "/": index,
+
     // ── Health (no auth, no rate limit bypass needed — runMiddleware exempts it) ─
     "/health": {
       GET: withMiddleware(() =>
         jsonOk({ status: "ok", version: "1.0.0", timestamp: new Date().toISOString() })
       ),
+    },
+
+    "/openapi.yaml": {
+      GET: withMiddleware(async () => {
+        const spec = await Bun.file(new URL("../openapi.yaml", import.meta.url)).text();
+        return new Response(spec, {
+          headers: { "Content-Type": "application/yaml; charset=utf-8" },
+        });
+      }),
     },
 
     // ── Users ──────────────────────────────────────────────────────────────────
@@ -96,15 +115,19 @@ const server = Bun.serve({
 
   // ─── 404 / Method-Not-Allowed fallback ────────────────────────────────────
   // Called for any request that didn't match a route above.
-  async fetch(req: Request): Promise<Response> {
-    return runMiddleware(req, null, () => {
+  async fetch(req, server): Promise<Response> {
+    serverRef = server;
+    return runMiddleware(req, server, () => {
       const url = new URL(req.url);
       return jsonError(`Cannot ${req.method} ${url.pathname}`, 404);
     });
   },
 });
 
+serverRef = server;
+
 console.log(`🚀 Payment Gateway  →  http://localhost:${server.port}`);
+console.log(`   UI:    http://localhost:${server.port}/`);
 console.log(`   Mode:  ${process.env.NODE_ENV ?? "development"}`);
 console.log(`   DB:    ${process.env.DATABASE_URL ?? "./data/payment_gateway.db"}`);
 
