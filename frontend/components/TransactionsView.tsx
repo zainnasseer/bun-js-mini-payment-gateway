@@ -227,18 +227,16 @@ export function TransactionsView({
             }
             onClick={() => setVolumeExpanded((open) => !open)}
           >
-            <div className="stat-expand-head">
-              <div className="stat-label">Volume (filtered)</div>
-              {filteredVolumeUsd ? (
-                <span
-                  className="volume-fx-tag"
-                  title={`FX rates as of ${filteredVolumeUsd.ratesAsOf} · ${filteredVolumeUsd.rateSource}`}
-                >
-                  {formatFxRateSourceTag(filteredVolumeUsd.rateSource)}
-                </span>
-              ) : null}
-            </div>
+            <div className="stat-label">Volume (filtered)</div>
             <div className="stat-value stat-value--sm">{formatFilteredVolumeUsd(filteredVolumeUsd)}</div>
+            {filteredVolumeUsd ? (
+              <span
+                className="volume-fx-tag"
+                title={`FX rates as of ${filteredVolumeUsd.ratesAsOf} · ${filteredVolumeUsd.rateSource}`}
+              >
+                {formatFxRateSourceTag(filteredVolumeUsd.rateSource)}
+              </span>
+            ) : null}
             <span className="stat-expand-chevron" aria-hidden />
           </button>
           {volumeExpanded && (

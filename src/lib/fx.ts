@@ -47,13 +47,13 @@ export type CurrencyVolumeBreakdown = {
 };
 
 export function sumAmountsByCurrency(
-  rows: ReadonlyArray<{ amount: number; currency: string }>
+  rows: ReadonlyArray<{ amount: number; currency: string; transactionCount?: number }>
 ): CurrencyVolumeBreakdown[] {
   const totals = new Map<string, { amountMinor: number; transactionCount: number }>();
   for (const row of rows) {
     const bucket = totals.get(row.currency) ?? { amountMinor: 0, transactionCount: 0 };
     bucket.amountMinor += row.amount;
-    bucket.transactionCount += 1;
+    bucket.transactionCount += row.transactionCount ?? 1;
     totals.set(row.currency, bucket);
   }
   return [...totals.entries()]
@@ -74,7 +74,7 @@ export type FilteredVolumeUsd = {
 };
 
 export async function buildFilteredVolumeUsd(
-  rows: ReadonlyArray<{ amount: number; currency: string }>
+  rows: ReadonlyArray<{ amount: number; currency: string; transactionCount?: number }>
 ): Promise<FilteredVolumeUsd> {
   const snap = await ensureFxRatesReady();
   return {

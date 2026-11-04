@@ -29,8 +29,13 @@ type ErApiLatestResponse = {
   result?: string;
   base_code?: string;
   time_last_update_utc?: string;
+  /** Documented field name. */
   conversion_rates?: Record<string, number>;
+  /** Field the open endpoint actually returns today. */
+  rates?: Record<string, number>;
 };
+
+const FALLBACK_RETRY_MS = 30_000;
 
 let cache: FxRateSnapshot | null = null;
 let refreshPromise: Promise<FxRateSnapshot> | null = null;
@@ -113,15 +118,16 @@ async function fetchLiveSnapshot(): Promise<FxRateSnapshot> {
     if (!res.ok) throw new Error(`FX HTTP ${res.status}`);
 
     const body = (await res.json()) as ErApiLatestResponse;
-    if (body.result !== "success" || !body.conversion_rates) {
-      throw new Error("FX response missing conversion_rates");
+    const table = body.conversion_rates ?? body.rates;
+    if (body.result !== "success" || !table) {
+      throw new Error("FX response missing rates");
     }
     if (body.base_code && body.base_code !== "USD") {
       throw new Error(`FX base must be USD, got ${body.base_code}`);
     }
 
     return {
-      usdPerMajorUnit: usdPerMajorFromUsdBaseTable(body.conversion_rates),
+      usdPerMajorUnit: usdPerMajorFromUsdBaseTable(table),
       ratesAsOf: parseRatesAsOfUtc(body.time_last_update_utc),
       source: "live:open.er-api.com",
       fetchedAt: new Date().toISOString(),
@@ -141,6 +147,12 @@ function fallbackSnapshot(reason: string): FxRateSnapshot {
   };
 }
 
+function snapshotIsFresh(snap: FxRateSnapshot): boolean {
+  const age = Date.now() - new Date(snap.fetchedAt).getTime();
+  const ttl = snap.source.startsWith("fallback:") ? FALLBACK_RETRY_MS : fxRefreshMs();
+  return age < ttl;
+}
+
 export async function refreshFxRates(force = false): Promise<FxRateSnapshot> {
   const envSnap = envOverrideSnapshot();
   if (envSnap) {
@@ -148,7 +160,7 @@ export async function refreshFxRates(force = false): Promise<FxRateSnapshot> {
     return envSnap;
   }
 
-  if (!force && cache && Date.now() - new Date(cache.fetchedAt).getTime() < fxRefreshMs()) {
+  if (!force && cache && snapshotIsFresh(cache)) {
     return cache;
   }
 
@@ -162,7 +174,10 @@ export async function refreshFxRates(force = false): Promise<FxRateSnapshot> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (cache) {
-        console.warn(`[fx] Refresh failed (${message}); serving stale live rates`);
+        cache = { ...cache, fetchedAt: new Date().toISOString() };
+        console.warn(
+          `[fx] Refresh failed (${message}); serving ${cache.source.startsWith("fallback:") ? "static fallback" : "stale live"} rates`
+        );
         return cache;
       }
       const snap = fallbackSnapshot(message);
@@ -177,15 +192,17 @@ export async function refreshFxRates(force = false): Promise<FxRateSnapshot> {
 }
 
 export async function ensureFxRatesReady(): Promise<FxRateSnapshot> {
-  if (cache) {
-    const age = Date.now() - new Date(cache.fetchedAt).getTime();
-    if (age < fxRefreshMs()) return cache;
-  }
+  if (cache && snapshotIsFresh(cache)) return cache;
   return refreshFxRates();
 }
 
 export function getFxRateSnapshot(): FxRateSnapshot {
   return cache ?? envOverrideSnapshot() ?? fallbackSnapshot("not initialized");
+}
+
+/** Cached snapshot only — does not invent a fallback or hit the network. */
+export function peekFxRateSnapshot(): FxRateSnapshot | null {
+  return cache;
 }
 
 export function startFxRatesRefreshLoop(): void {

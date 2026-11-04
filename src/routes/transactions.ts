@@ -1,4 +1,4 @@
-import { eq, desc, and, gte, lte } from "drizzle-orm";
+import { eq, desc, and, gte, lte, sql } from "drizzle-orm";
 import { getDb } from "../db/database";
 import { merchants, transactions, CURRENCY_CODES, TRANSACTION_STATUSES } from "../db/schema";
 import { generateId, isValidIdempotencyKey } from "../lib/crypto";
@@ -110,12 +110,23 @@ export async function listTransactions(req: Request): Promise<Response> {
       .limit(limit)
       .offset(offset);
 
-    const volumeRows = await getDb()
-      .select({ amount: transactions.amount, currency: transactions.currency })
+    const volumeAgg = await getDb()
+      .select({
+        currency: transactions.currency,
+        amount: sql<number>`coalesce(sum(${transactions.amount}), 0)::int`,
+        transactionCount: sql<number>`count(*)::int`,
+      })
       .from(transactions)
-      .where(whereClause);
+      .where(whereClause)
+      .groupBy(transactions.currency);
 
-    const filteredVolume = await buildFilteredVolumeUsd(volumeRows);
+    const filteredVolume = await buildFilteredVolumeUsd(
+      volumeAgg.map((row) => ({
+        currency: row.currency,
+        amount: Number(row.amount),
+        transactionCount: Number(row.transactionCount),
+      }))
+    );
 
     return jsonOk({
       transactions: results,

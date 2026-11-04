@@ -20,7 +20,7 @@ import { listConsoleAdmins, createConsoleAdmin, deleteConsoleAdmin } from "./rou
 import { getDemoConsoleConfig } from "./routes/publicDemo";
 import { runMiddleware } from "./middleware";
 import { jsonOk, jsonError } from "./lib/http";
-import { startFxRatesRefreshLoop } from "./lib/fxLive";
+import { peekFxRateSnapshot, startFxRatesRefreshLoop } from "./lib/fxLive";
 import index from "../index.html";
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -55,9 +55,17 @@ const server = Bun.serve({
     "/": index,
 
     "/health": {
-      GET: withMiddleware(() =>
-        jsonOk({ status: "ok", version: "2.0.0", timestamp: new Date().toISOString() })
-      ),
+      GET: withMiddleware(() => {
+        const fx = peekFxRateSnapshot();
+        return jsonOk({
+          status: "ok",
+          version: "2.0.0",
+          timestamp: new Date().toISOString(),
+          fx: fx
+            ? { source: fx.source, ratesAsOf: fx.ratesAsOf, fetchedAt: fx.fetchedAt }
+            : { source: "pending" },
+        });
+      }),
     },
 
     "/openapi.yaml": {
