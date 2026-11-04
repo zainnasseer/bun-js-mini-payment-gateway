@@ -3,6 +3,7 @@ import { getDb } from "../db/database";
 import { transactions } from "../db/schema";
 import { parseTransactionMetadataLenient } from "./metadata";
 import { firstRow } from "./dbQuery";
+import { queueMerchantWebhook } from "./merchantWebhook";
 
 const DEFAULT_PROCESSOR_DELAY_MS = 3000;
 const DEFAULT_SUCCESS_RATE       = 0.85;
@@ -53,10 +54,14 @@ export function submitToProcessor(transactionId: string): void {
         },
       });
 
-      await db
+      const updatedAt = new Date().toISOString();
+      const [updated] = await db
         .update(transactions)
-        .set({ status: newStatus, metadata: updatedMeta, updatedAt: new Date().toISOString() })
-        .where(eq(transactions.id, transactionId));
+        .set({ status: newStatus, metadata: updatedMeta, updatedAt })
+        .where(eq(transactions.id, transactionId))
+        .returning();
+
+      if (updated) queueMerchantWebhook(updated);
 
       console.log(`[Processor] ${succeeded ? "✅" : "❌"} ${transactionId} → ${newStatus}`);
     } catch (err) {

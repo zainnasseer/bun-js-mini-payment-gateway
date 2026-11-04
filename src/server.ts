@@ -1,9 +1,10 @@
-import { listUsers, getUser, createUser } from "./routes/users";
 import {
-  listPaymentMethods,
-  createPaymentMethod,
-  deletePaymentMethod,
-} from "./routes/paymentMethods";
+  listMerchants,
+  getMerchant,
+  createMerchant,
+  updateMerchant,
+  deleteMerchant,
+} from "./routes/merchants";
 import {
   listTransactions,
   getTransaction,
@@ -12,6 +13,7 @@ import {
   refundTransaction,
 } from "./routes/transactions";
 import { handleProcessorWebhook } from "./routes/webhooks";
+import { listWebhookDeliveries } from "./routes/webhookDeliveries";
 import { getDemoConsoleConfig } from "./routes/publicDemo";
 import { runMiddleware } from "./middleware";
 import { jsonOk, jsonError } from "./lib/http";
@@ -19,19 +21,6 @@ import index from "../index.html";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
-// ─── Middleware-wrapped handler factory ───────────────────────────────────────
-//
-// Bun.serve() routes don't have access to the `server` instance, so we
-// wire middleware at the fetch() level (fallback + route wrappers).
-//
-// For routes declared in the `routes` table, middleware is applied via
-// the fetch fallback — Bun calls fetch() ONLY when no route matches.
-// To apply middleware to EVERY request (including matched routes) we wrap
-// each handler individually using this helper.
-
-// Bun.serve() resolves params as Record<string, string> at runtime.
-// Route handlers declare narrower param shapes for DX, so we use `any`
-// here to bridge that — runtime safety is guaranteed by Bun's router.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type RouteHandler = (req: Request & { params: any }) => Response | Promise<Response>;
 
@@ -44,8 +33,6 @@ function withMiddleware(handler: RouteHandler): RouteHandler {
     return runMiddleware(req, serverRef, () => handler(req));
   };
 }
-
-// ─── Server ───────────────────────────────────────────────────────────────────
 
 const isDev = process.env.NODE_ENV !== "production";
 
@@ -63,10 +50,9 @@ const server = Bun.serve({
   routes: {
     "/": index,
 
-    // ── Health (no auth, no rate limit bypass needed — runMiddleware exempts it) ─
     "/health": {
       GET: withMiddleware(() =>
-        jsonOk({ status: "ok", version: "1.0.0", timestamp: new Date().toISOString() })
+        jsonOk({ status: "ok", version: "2.0.0", timestamp: new Date().toISOString() })
       ),
     },
 
@@ -83,48 +69,39 @@ const server = Bun.serve({
       GET: withMiddleware(() => getDemoConsoleConfig()),
     },
 
-    // ── Users ──────────────────────────────────────────────────────────────────
-    "/api/v1/users": {
-      GET:  withMiddleware(listUsers),
-      POST: withMiddleware(createUser),
+    "/api/v1/merchants": {
+      GET:  withMiddleware(listMerchants),
+      POST: withMiddleware(createMerchant),
     },
-    "/api/v1/users/:id": {
-      GET: withMiddleware(getUser),
-    },
-
-    // ── Payment Methods ────────────────────────────────────────────────────────
-    "/api/v1/users/:userId/payment-methods": {
-      GET:  withMiddleware(listPaymentMethods),
-      POST: withMiddleware(createPaymentMethod),
-    },
-    "/api/v1/users/:userId/payment-methods/:methodId": {
-      DELETE: withMiddleware(deletePaymentMethod),
+    "/api/v1/merchants/:id": {
+      GET:    withMiddleware(getMerchant),
+      PATCH:  withMiddleware(updateMerchant),
+      DELETE: withMiddleware(deleteMerchant),
     },
 
-    // ── Transactions ───────────────────────────────────────────────────────────
     "/api/v1/transactions": {
       GET:  withMiddleware(listTransactions),
-      POST: withMiddleware(createTransaction),       // requires Idempotency-Key header
+      POST: withMiddleware(createTransaction),
     },
     "/api/v1/transactions/:id": {
       GET: withMiddleware(getTransaction),
     },
     "/api/v1/transactions/:id/status": {
-      PATCH: withMiddleware(updateTransactionStatus), // simulates manual status override
+      PATCH: withMiddleware(updateTransactionStatus),
     },
     "/api/v1/transactions/:id/refund": {
-      POST: withMiddleware(refundTransaction),        // dedicated refund endpoint
+      POST: withMiddleware(refundTransaction),
     },
 
-    // ── Webhooks ───────────────────────────────────────────────────────────────
-    // Exempt from API key auth (webhook uses its own HMAC-SHA256 signature).
+    "/api/v1/webhook-deliveries": {
+      GET: withMiddleware(listWebhookDeliveries),
+    },
+
     "/webhooks/processor": {
       POST: withMiddleware(handleProcessorWebhook),
     },
   },
 
-  // ─── 404 / Method-Not-Allowed fallback ────────────────────────────────────
-  // Called for any request that didn't match a route above.
   async fetch(req, server): Promise<Response> {
     serverRef = server;
     return runMiddleware(req, server, () => {

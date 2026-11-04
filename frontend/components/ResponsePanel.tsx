@@ -1,4 +1,5 @@
 import type { ApiCallResult } from "../lib/api";
+import { IconTerminal } from "./icons";
 
 type Props = {
   result: ApiCallResult | null;
@@ -19,8 +20,15 @@ export function ResponsePanel({ result, history, onSelect }: Props) {
   return (
     <aside className="response-panel">
       <header className="response-panel__header">
-        <h2>API response</h2>
-        <p className="muted">Live status, envelope, and raw JSON from the gateway</p>
+        <div className="response-panel__title">
+          <span className="response-panel__icon">
+            <IconTerminal />
+          </span>
+          <div>
+            <h2>API inspector</h2>
+            <p className="muted">Live status, envelope, and raw JSON</p>
+          </div>
+        </div>
       </header>
 
       {!active ? (

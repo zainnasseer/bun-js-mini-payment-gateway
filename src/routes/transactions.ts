@@ -1,7 +1,8 @@
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, gte, lte } from "drizzle-orm";
 import { getDb } from "../db/database";
-import { users, paymentMethods, transactions, CURRENCY_CODES, TRANSACTION_STATUSES } from "../db/schema";
+import { merchants, transactions, CURRENCY_CODES, TRANSACTION_STATUSES } from "../db/schema";
 import { generateId, isValidIdempotencyKey } from "../lib/crypto";
+import { resolveAuthScope } from "../lib/authContext";
 import {
   jsonOk,
   jsonCreated,
@@ -12,17 +13,11 @@ import {
   validateRequiredFields,
 } from "../lib/http";
 import { submitToProcessor } from "../lib/processor";
+import { queueMerchantWebhook } from "../lib/merchantWebhook";
 import { isUniqueViolation } from "../lib/dbErrors";
 import { firstRow } from "../lib/dbQuery";
 import { parseTransactionMetadata } from "../lib/metadata";
 import type { CreateTransactionPayload, TransactionStatus } from "../types";
-
-// ─── State machine ─────────────────────────────────────────────────────────────
-//   PENDING    → AUTHORIZED | FAILED
-//   AUTHORIZED → CAPTURED   | FAILED
-//   CAPTURED   → REFUNDED
-//   FAILED     → (terminal)
-//   REFUNDED   → (terminal)
 
 const ALLOWED_TRANSITIONS: Record<TransactionStatus, TransactionStatus[]> = {
   PENDING:    ["AUTHORIZED", "FAILED"],
@@ -32,23 +27,72 @@ const ALLOWED_TRANSITIONS: Record<TransactionStatus, TransactionStatus[]> = {
   REFUNDED:   [],
 };
 
-// ─── GET /transactions ────────────────────────────────────────────────────────
+async function resolveMerchantIdForWrite(
+  req: Request,
+  body: CreateTransactionPayload
+): Promise<string | Response> {
+  const scope = await resolveAuthScope(req);
+  if (scope.kind === "merchant") return scope.merchant.id;
+  if (scope.kind === "admin" || scope.kind === "anonymous") {
+    if (!body.merchant_id?.trim()) {
+      return jsonError("merchant_id is required when using the platform admin API key", 422);
+    }
+    return body.merchant_id.trim();
+  }
+  return jsonError("Unauthorized", 401);
+}
+
+/** YYYY-MM-DD → ISO bounds for `created_at` (stored as ISO text). */
+function parseDateFilter(value: string | null, endOfDay: boolean): string | null {
+  if (!value?.trim()) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return null;
+  return endOfDay ? `${value.trim()}T23:59:59.999Z` : `${value.trim()}T00:00:00.000Z`;
+}
+
+async function canAccessMerchant(req: Request, merchantId: string): Promise<boolean> {
+  const scope = await resolveAuthScope(req);
+  if (scope.kind === "admin" || scope.kind === "anonymous") return true;
+  if (scope.kind === "merchant") return scope.merchant.id === merchantId;
+  return false;
+}
 
 export async function listTransactions(req: Request): Promise<Response> {
   try {
-    const url    = new URL(req.url);
-    const userId = url.searchParams.get("user_id");
+    const url = new URL(req.url);
+    const filterMerchantId = url.searchParams.get("merchant_id");
     const status = url.searchParams.get("status") as TransactionStatus | null;
-    const limit  = Math.min(Number(url.searchParams.get("limit")  ?? 50), 100);
+    const fromRaw = url.searchParams.get("from");
+    const toRaw = url.searchParams.get("to");
+    const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 100);
     const offset = Number(url.searchParams.get("offset") ?? 0);
+
+    const fromIso = parseDateFilter(fromRaw, false);
+    const toIso = parseDateFilter(toRaw, true);
+    if (fromRaw && !fromIso) return jsonError("Invalid from date — use YYYY-MM-DD", 422);
+    if (toRaw && !toIso) return jsonError("Invalid to date — use YYYY-MM-DD", 422);
+    if (fromIso && toIso && fromIso > toIso) {
+      return jsonError("`from` must be on or before `to`", 422);
+    }
+
+    const scope = await resolveAuthScope(req);
+    if (scope.kind === "merchant") {
+      if (filterMerchantId && filterMerchantId !== scope.merchant.id) {
+        return jsonError("Cannot list transactions for another merchant", 403);
+      }
+    }
 
     if (status && !TRANSACTION_STATUSES.includes(status)) {
       return jsonError(`Invalid status filter. Must be one of: ${TRANSACTION_STATUSES.join(", ")}`, 422);
     }
 
+    const merchantId =
+      scope.kind === "merchant" ? scope.merchant.id : filterMerchantId ?? null;
+
     const conditions = [];
-    if (userId) conditions.push(eq(transactions.userId, userId));
+    if (merchantId) conditions.push(eq(transactions.merchantId, merchantId));
     if (status) conditions.push(eq(transactions.status, status));
+    if (fromIso) conditions.push(gte(transactions.createdAt, fromIso));
+    if (toIso) conditions.push(lte(transactions.createdAt, toIso));
 
     const results = await getDb()
       .select()
@@ -64,8 +108,6 @@ export async function listTransactions(req: Request): Promise<Response> {
   }
 }
 
-// ─── GET /transactions/:id ────────────────────────────────────────────────────
-
 export async function getTransaction(
   req: Request & { params: { id: string } }
 ): Promise<Response> {
@@ -75,17 +117,17 @@ export async function getTransaction(
     );
 
     if (!tx) return jsonNotFound("Transaction");
+    if (!(await canAccessMerchant(req, tx.merchantId))) {
+      return jsonError("Forbidden", 403);
+    }
     return jsonOk(tx);
   } catch (err) {
     return jsonInternalError(err);
   }
 }
 
-// ─── POST /transactions ───────────────────────────────────────────────────────
-
 export async function createTransaction(req: Request): Promise<Response> {
   try {
-    // Idempotency key validation
     const idempotencyKey = req.headers.get("Idempotency-Key");
     if (!idempotencyKey) {
       return jsonError("Missing required header: Idempotency-Key. Generate a UUID v4 on the client side.", 400);
@@ -99,11 +141,15 @@ export async function createTransaction(req: Request): Promise<Response> {
 
     const validationError = validateRequiredFields(
       body as unknown as Record<string, unknown>,
-      ["user_id", "payment_method_id", "amount", "currency"]
+      ["amount", "currency"]
     );
     if (validationError) return jsonError(validationError, 422);
 
-    const { user_id, payment_method_id, amount, currency, description, metadata } = body;
+    const merchantIdOrErr = await resolveMerchantIdForWrite(req, body);
+    if (merchantIdOrErr instanceof Response) return merchantIdOrErr;
+    const merchantId = merchantIdOrErr;
+
+    const { amount, currency, description, metadata } = body;
 
     if (!Number.isInteger(amount) || amount <= 0) {
       return jsonError(
@@ -116,55 +162,33 @@ export async function createTransaction(req: Request): Promise<Response> {
       return jsonError(`Unsupported currency. Must be one of: ${CURRENCY_CODES.join(", ")}`, 422);
     }
 
-    // Atomic idempotency check + insert
     let isReplay = false;
 
     const transaction = await getDb().transaction(async (tx) => {
-      // 1. Idempotency check
       const existing = await firstRow(
-        tx
-          .select()
-          .from(transactions)
-          .where(eq(transactions.idempotencyKey, idempotencyKey))
-          .limit(1)
+        tx.select().from(transactions).where(eq(transactions.idempotencyKey, idempotencyKey)).limit(1)
       );
-
       if (existing) {
         isReplay = true;
         return existing;
       }
 
-      // 2. Verify user
-      const user = await firstRow(
-        tx.select({ id: users.id }).from(users).where(eq(users.id, user_id)).limit(1)
+      const merchant = await firstRow(
+        tx.select({ id: merchants.id }).from(merchants).where(eq(merchants.id, merchantId)).limit(1)
       );
+      if (!merchant) throw new Error("MERCHANT_NOT_FOUND");
 
-      if (!user) throw new Error("USER_NOT_FOUND");
-
-      // 3. Verify payment method belongs to user
-      const pm = await firstRow(
-        tx
-          .select({ id: paymentMethods.id })
-          .from(paymentMethods)
-          .where(and(eq(paymentMethods.id, payment_method_id), eq(paymentMethods.userId, user_id)))
-          .limit(1)
-      );
-
-      if (!pm) throw new Error("PM_NOT_FOUND");
-
-      // 4. Insert (concurrent duplicate keys → unique violation → replay)
       try {
         const [inserted] = await tx
           .insert(transactions)
           .values({
-            id:              generateId(),
-            userId:          user_id,
-            paymentMethodId: payment_method_id,
-            idempotencyKey:  idempotencyKey,
+            id:             generateId(),
+            merchantId,
+            idempotencyKey: idempotencyKey,
             amount,
-            currency:        currency as (typeof CURRENCY_CODES)[number],
-            description:     description ?? null,
-            metadata:        metadata ? JSON.stringify(metadata) : null,
+            currency:       currency as (typeof CURRENCY_CODES)[number],
+            description:    description ?? null,
+            metadata:       metadata ? JSON.stringify(metadata) : null,
           })
           .returning();
 
@@ -173,11 +197,7 @@ export async function createTransaction(req: Request): Promise<Response> {
         if (!isUniqueViolation(insertErr)) throw insertErr;
         isReplay = true;
         const replay = await firstRow(
-          tx
-            .select()
-            .from(transactions)
-            .where(eq(transactions.idempotencyKey, idempotencyKey))
-            .limit(1)
+          tx.select().from(transactions).where(eq(transactions.idempotencyKey, idempotencyKey)).limit(1)
         );
         if (!replay) throw insertErr;
         return replay;
@@ -186,18 +206,16 @@ export async function createTransaction(req: Request): Promise<Response> {
 
     if (isReplay) return jsonOk(transaction!);
 
+    queueMerchantWebhook(transaction!, "transaction.created");
     submitToProcessor(transaction!.id);
     return jsonCreated(transaction!);
   } catch (err) {
-    if (err instanceof Error) {
-      if (err.message === "USER_NOT_FOUND") return jsonNotFound("User");
-      if (err.message === "PM_NOT_FOUND")   return jsonError("Payment method not found or does not belong to this user", 404);
+    if (err instanceof Error && err.message === "MERCHANT_NOT_FOUND") {
+      return jsonNotFound("Merchant");
     }
     return jsonInternalError(err);
   }
 }
-
-// ─── PATCH /transactions/:id/status ──────────────────────────────────────────
 
 export async function updateTransactionStatus(
   req: Request & { params: { id: string } }
@@ -216,6 +234,7 @@ export async function updateTransactionStatus(
       db.select().from(transactions).where(eq(transactions.id, req.params.id)).limit(1)
     );
     if (!tx) return jsonNotFound("Transaction");
+    if (!(await canAccessMerchant(req, tx.merchantId))) return jsonError("Forbidden", 403);
 
     if (!ALLOWED_TRANSITIONS[tx.status as TransactionStatus].includes(status)) {
       return jsonError(
@@ -230,19 +249,19 @@ export async function updateTransactionStatus(
       .where(eq(transactions.id, req.params.id))
       .returning();
 
+    if (updated) queueMerchantWebhook(updated, "transaction.status_updated");
+
     return jsonOk(updated);
   } catch (err) {
     return jsonInternalError(err);
   }
 }
 
-// ─── POST /transactions/:id/refund ────────────────────────────────────────────
-
 export async function refundTransaction(
   req: Request & { params: { id: string } }
 ): Promise<Response> {
   try {
-    const body   = await parseJsonBody<{ reason?: string }>(req);
+    const body = await parseJsonBody<{ reason?: string }>(req);
     const reason = body?.reason ?? "Refund requested";
 
     const updated = await getDb().transaction(async (tx) => {
@@ -251,10 +270,11 @@ export async function refundTransaction(
       );
 
       if (!record) throw new Error("TX_NOT_FOUND");
+      if (!(await canAccessMerchant(req, record.merchantId))) throw new Error("FORBIDDEN");
       if (record.status !== "CAPTURED") throw new Error(`INVALID_STATUS:${record.status}`);
 
       const existingMeta = parseTransactionMetadata(record.metadata);
-      const updatedMeta  = JSON.stringify({
+      const updatedMeta = JSON.stringify({
         ...existingMeta,
         refund: { reason, refunded_at: new Date().toISOString() },
       });
@@ -268,10 +288,13 @@ export async function refundTransaction(
       return result;
     });
 
+    if (updated) queueMerchantWebhook(updated, "transaction.refunded");
+
     return jsonOk(updated);
   } catch (err) {
     if (err instanceof Error) {
       if (err.message === "TX_NOT_FOUND") return jsonNotFound("Transaction");
+      if (err.message === "FORBIDDEN") return jsonError("Forbidden", 403);
       if (err.message.startsWith("INVALID_STATUS:")) {
         const current = err.message.split(":")[1];
         return jsonError(`Only CAPTURED transactions can be refunded. Current status: ${current}`, 422);

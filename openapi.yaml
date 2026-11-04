@@ -1,17 +1,17 @@
 openapi: 3.0.3
 info:
-  title: Payment Gateway API
-  version: 1.0.0
+  title: Merchant Payment Gateway API
+  version: 2.0.0
   description: |
-    REST payment gateway (Bun + Drizzle + SQLite). Amounts are integer smallest currency units (cents).
-    Production requests require `X-API-Key`. Payment creation requires `Idempotency-Key` (UUID v4).
+    Merchant-centric payment gateway (Bun + Drizzle + PostgreSQL).
+    Amounts are integer smallest currency units (cents).
+    Merchant APIs use per-merchant `X-API-Key`. Platform admin uses env `API_KEY`.
+    `POST /merchants` is open registration. Charges require `Idempotency-Key` (UUID v4).
 servers:
   - url: http://localhost:3000
-    description: Local development
 tags:
   - name: System
-  - name: Users
-  - name: Payment Methods
+  - name: Merchants
   - name: Transactions
   - name: Webhooks
 paths:
@@ -21,45 +21,43 @@ paths:
       summary: Liveness probe
       responses:
         "200":
-          description: Service healthy
-  /openapi.yaml:
+          description: OK
+  /api/v1/merchants:
     get:
-      tags: [System]
-      summary: OpenAPI specification
-      responses:
-        "200":
-          description: YAML spec
-  /api/v1/users:
-    get:
-      tags: [Users]
-      summary: List users
+      tags: [Merchants]
+      summary: List merchants (platform admin or dev)
       security: [{ ApiKeyAuth: [] }]
       responses:
         "200":
-          description: User list
+          description: Merchant list
     post:
-      tags: [Users]
-      summary: Create user
-      security: [{ ApiKeyAuth: [] }]
+      tags: [Merchants]
+      summary: Register merchant (no API key)
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [email, name]
+              required: [name, email, webhook_url, phone_number, origin_header]
               properties:
-                email: { type: string, format: email }
                 name: { type: string }
+                email: { type: string, format: email }
+                webhook_url: { type: string, format: uri }
+                phone_number: { type: string }
+                origin_header: { type: string }
+                ip_whitelist:
+                  type: array
+                  items: { type: string }
+                api_key: { type: string }
+                webhook_secret: { type: string }
       responses:
         "201":
-          description: Created
-        "409":
-          description: Duplicate email
-  /api/v1/users/{id}:
+          description: Created with api_key and webhook_secret
+  /api/v1/merchants/{id}:
     get:
-      tags: [Users]
-      summary: Get user by ID
+      tags: [Merchants]
+      summary: Get merchant
       security: [{ ApiKeyAuth: [] }]
       parameters:
         - name: id
@@ -68,63 +66,41 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         "200":
-          description: User
-        "404":
-          description: Not found
-  /api/v1/users/{userId}/payment-methods:
-    get:
-      tags: [Payment Methods]
-      summary: List payment methods for user
+          description: Merchant
+    patch:
+      tags: [Merchants]
+      summary: Update merchant
       security: [{ ApiKeyAuth: [] }]
       parameters:
-        - name: userId
-          in: path
-          required: true
-          schema: { type: string, format: uuid }
-      responses:
-        "200":
-          description: Payment methods
-    post:
-      tags: [Payment Methods]
-      summary: Register tokenized payment method (no PAN/CVV)
-      security: [{ ApiKeyAuth: [] }]
-      parameters:
-        - name: userId
+        - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
       requestBody:
-        required: true
         content:
           application/json:
             schema:
               type: object
-              required: [type, token_id, last_four, expiry_month, expiry_year]
               properties:
-                type:
-                  type: string
-                  enum: [CARD, BANK_ACCOUNT, DIGITAL_WALLET]
-                token_id: { type: string }
-                last_four: { type: string, pattern: "^\\d{4}$" }
-                expiry_month: { type: integer, minimum: 1, maximum: 12 }
-                expiry_year: { type: integer }
-                is_default: { type: boolean }
+                name: { type: string }
+                email: { type: string }
+                webhook_url: { type: string }
+                phone_number: { type: string }
+                origin_header: { type: string }
+                ip_whitelist:
+                  type: array
+                  items: { type: string }
+                api_key: { type: string }
+                webhook_secret: { type: string }
       responses:
-        "201":
-          description: Created
-        "400":
-          description: PCI violation (raw card data)
-  /api/v1/users/{userId}/payment-methods/{methodId}:
+        "200":
+          description: Updated
     delete:
-      tags: [Payment Methods]
-      summary: Delete payment method
+      tags: [Merchants]
+      summary: Delete merchant (platform admin)
       security: [{ ApiKeyAuth: [] }]
       parameters:
-        - name: userId
-          in: path
-          required: true
-          schema: { type: string, format: uuid }
-        - name: methodId
+        - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
@@ -134,10 +110,10 @@ paths:
   /api/v1/transactions:
     get:
       tags: [Transactions]
-      summary: List transactions
+      summary: List transactions (scoped to merchant key or filter by merchant_id as admin)
       security: [{ ApiKeyAuth: [] }]
       parameters:
-        - name: user_id
+        - name: merchant_id
           in: query
           schema: { type: string, format: uuid }
         - name: status
@@ -145,18 +121,23 @@ paths:
           schema:
             type: string
             enum: [PENDING, AUTHORIZED, CAPTURED, FAILED, REFUNDED]
+        - name: from
+          in: query
+          description: Start date (inclusive), YYYY-MM-DD
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: End date (inclusive), YYYY-MM-DD
+          schema: { type: string, format: date }
         - name: limit
           in: query
-          schema: { type: integer, maximum: 100, default: 50 }
-        - name: offset
-          in: query
-          schema: { type: integer, default: 0 }
+          schema: { type: integer, maximum: 100 }
       responses:
         "200":
-          description: Paginated transactions
+          description: Transaction list
     post:
       tags: [Transactions]
-      summary: Create idempotent charge
+      summary: Create charge
       security: [{ ApiKeyAuth: [] }]
       parameters:
         - name: Idempotency-Key
@@ -169,21 +150,19 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, payment_method_id, amount, currency]
+              required: [amount, currency]
               properties:
-                user_id: { type: string, format: uuid }
-                payment_method_id: { type: string, format: uuid }
+                merchant_id:
+                  type: string
+                  description: Required when using platform admin API key
                 amount: { type: integer, minimum: 1 }
                 currency:
                   type: string
                   enum: [USD, EUR, GBP, JPY, AED, SAR]
                 description: { type: string }
-                metadata: { type: object }
       responses:
         "201":
-          description: New transaction
-        "200":
-          description: Idempotent replay (same key)
+          description: Created
   /api/v1/transactions/{id}:
     get:
       tags: [Transactions]
@@ -200,7 +179,7 @@ paths:
   /api/v1/transactions/{id}/status:
     patch:
       tags: [Transactions]
-      summary: Update status (state machine enforced)
+      summary: Update status (simulator)
       security: [{ ApiKeyAuth: [] }]
       parameters:
         - name: id
@@ -208,7 +187,6 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       requestBody:
-        required: true
         content:
           application/json:
             schema:
@@ -221,8 +199,6 @@ paths:
       responses:
         "200":
           description: Updated
-        "422":
-          description: Invalid transition
   /api/v1/transactions/{id}/refund:
     post:
       tags: [Transactions]
@@ -233,43 +209,53 @@ paths:
           in: path
           required: true
           schema: { type: string, format: uuid }
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                reason: { type: string }
       responses:
         "200":
           description: Refunded
+  /api/v1/webhook-deliveries:
+    get:
+      tags: [Webhooks]
+      summary: List outbound webhook deliveries to merchants
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: merchant_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, DELIVERED, FAILED]
+        - name: event
+          in: query
+          schema: { type: string }
+        - name: transaction_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, maximum: 100 }
+      responses:
+        "200":
+          description: Delivery log
   /webhooks/processor:
     post:
       tags: [Webhooks]
-      summary: Processor callback (HMAC-SHA256)
+      summary: Inbound processor webhook (HMAC — merchant secret from transaction)
       parameters:
         - name: X-Webhook-Signature
           in: header
           required: true
           schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [transaction_id, status]
-              properties:
-                transaction_id: { type: string, format: uuid }
-                status:
-                  type: string
-                  enum: [AUTHORIZED, CAPTURED, FAILED]
-                processor_ref: { type: string }
       responses:
         "200":
           description: Accepted
-        "401":
-          description: Invalid signature
 components:
   securitySchemes:
     ApiKeyAuth:

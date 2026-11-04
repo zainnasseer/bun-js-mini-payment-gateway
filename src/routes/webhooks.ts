@@ -1,10 +1,11 @@
 import { eq, and } from "drizzle-orm";
 import { getDb } from "../db/database";
-import { transactions, TRANSACTION_STATUSES } from "../db/schema";
+import { merchants, transactions, TRANSACTION_STATUSES } from "../db/schema";
 import { signPayload, safeCompare } from "../lib/crypto";
 import { jsonOk, jsonError, jsonInternalError } from "../lib/http";
 import { parseTransactionMetadata } from "../lib/metadata";
 import { firstRow } from "../lib/dbQuery";
+import { queueMerchantWebhook } from "../lib/merchantWebhook";
 import type { TransactionStatus } from "../types";
 
 const WEBHOOK_VALID_STATUSES: TransactionStatus[] = ["AUTHORIZED", "CAPTURED", "FAILED"];
@@ -17,23 +18,64 @@ const ALLOWED_TRANSITIONS: Record<TransactionStatus, TransactionStatus[]> = {
   REFUNDED:   [],
 };
 
+async function verifySignature(
+  rawBody: string,
+  signature: string,
+  secret: string
+): Promise<boolean> {
+  if (!secret) return process.env.NODE_ENV !== "production";
+  const expected = signPayload(secret, rawBody);
+  return safeCompare(signature, expected);
+}
+
 async function verifySignatureAndReadBody(req: Request): Promise<string | Response> {
   const signature = req.headers.get("X-Webhook-Signature");
   if (!signature) return jsonError("Missing required header: X-Webhook-Signature", 401);
 
   const rawBody = await req.text();
-  const secret = process.env.WEBHOOK_SECRET ?? "";
 
-  if (!secret) {
-    if (process.env.NODE_ENV !== "production") {
-      console.warn("⚠️  WEBHOOK_SECRET not set — skipping signature check in dev.");
-      return rawBody;
-    }
-    return jsonError("Server misconfiguration: WEBHOOK_SECRET not set", 500);
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    return jsonError("Invalid JSON payload", 400);
   }
 
-  const expected = signPayload(secret, rawBody);
-  if (!safeCompare(signature, expected)) return jsonError("Webhook signature verification failed", 401);
+  const transactionId = payload.transaction_id as string | undefined;
+  let secret = process.env.WEBHOOK_SECRET?.trim() ?? "";
+
+  if (transactionId) {
+    const tx = await firstRow(
+      getDb()
+        .select({ merchantId: transactions.merchantId })
+        .from(transactions)
+        .where(eq(transactions.id, String(transactionId)))
+        .limit(1)
+    );
+    if (tx) {
+      const merchant = await firstRow(
+        getDb()
+          .select({ webhookSecret: merchants.webhookSecret })
+          .from(merchants)
+          .where(eq(merchants.id, tx.merchantId))
+          .limit(1)
+      );
+      if (merchant?.webhookSecret) secret = merchant.webhookSecret;
+    }
+  }
+
+  if (!secret && process.env.NODE_ENV !== "production") {
+    console.warn("⚠️  No webhook secret — skipping signature check in dev.");
+    return rawBody;
+  }
+
+  if (!secret) {
+    return jsonError("Server misconfiguration: webhook secret not available", 500);
+  }
+
+  if (!(await verifySignature(rawBody, signature, secret))) {
+    return jsonError("Webhook signature verification failed", 401);
+  }
 
   return rawBody;
 }
@@ -78,7 +120,7 @@ export async function handleProcessorWebhook(req: Request): Promise<Response> {
       }
 
       const existingMeta = parseTransactionMetadata(record.metadata);
-      const updatedMeta  = JSON.stringify({
+      const updatedMeta = JSON.stringify({
         ...existingMeta,
         processor: {
           reference:    processor_ref ?? null,
@@ -96,6 +138,8 @@ export async function handleProcessorWebhook(req: Request): Promise<Response> {
       if (!row) throw new Error("STATUS_CONFLICT");
       return row;
     });
+
+    queueMerchantWebhook(updated);
 
     console.log(`[Webhook] Transaction ${transaction_id} → ${status}`);
     return jsonOk({ received: true, transaction: updated });

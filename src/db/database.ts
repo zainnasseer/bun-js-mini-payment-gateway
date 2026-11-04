@@ -42,7 +42,7 @@ export async function prepareTestDatabase(): Promise<void> {
   await runMigrations();
   const db = getDb();
   await db.execute(
-    sql`TRUNCATE TABLE transactions, payment_methods, users RESTART IDENTITY CASCADE`
+    sql`TRUNCATE TABLE merchant_webhook_deliveries, transactions, merchants RESTART IDENTITY CASCADE`
   );
 }
 

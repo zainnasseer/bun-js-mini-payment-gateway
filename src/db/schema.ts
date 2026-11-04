@@ -1,25 +1,17 @@
 /**
- * Drizzle ORM Schema — Payment Gateway
- * Driver: drizzle-orm/bun-sql (Bun.sql → PostgreSQL)
+ * Drizzle ORM Schema — Payment Gateway (merchant-centric)
  */
 
 import {
   pgTable,
   text,
   integer,
-  boolean,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
 const now = () => new Date().toISOString();
-
-export const PAYMENT_METHOD_TYPES = [
-  "CARD",
-  "BANK_ACCOUNT",
-  "DIGITAL_WALLET",
-] as const;
 
 export const TRANSACTION_STATUSES = [
   "PENDING",
@@ -33,79 +25,113 @@ export const CURRENCY_CODES = [
   "USD", "EUR", "GBP", "JPY", "AED", "SAR",
 ] as const;
 
-export const users = pgTable(
-  "users",
-  {
-    id:        text("id").primaryKey(),
-    email:     text("email").notNull().unique(),
-    name:      text("name").notNull(),
-    createdAt: text("created_at").notNull().$defaultFn(now),
-    updatedAt: text("updated_at").notNull().$defaultFn(now).$onUpdateFn(now),
-  },
-  (t) => [index("idx_users_email").on(t.email)]
-);
+export const WEBHOOK_DELIVERY_STATUSES = ["PENDING", "DELIVERED", "FAILED"] as const;
 
-export const paymentMethods = pgTable(
-  "payment_methods",
+export const WEBHOOK_EVENTS = [
+  "transaction.created",
+  "transaction.authorized",
+  "transaction.captured",
+  "transaction.failed",
+  "transaction.refunded",
+  "transaction.status_updated",
+] as const;
+
+export const merchants = pgTable(
+  "merchants",
   {
-    id:          text("id").primaryKey(),
-    userId:      text("user_id")
-                   .notNull()
-                   .references(() => users.id, { onDelete: "cascade" }),
-    type:        text("type", { enum: PAYMENT_METHOD_TYPES }).notNull(),
-    tokenId:     text("token_id").notNull().unique(),
-    lastFour:    text("last_four").notNull(),
-    expiryMonth: integer("expiry_month").notNull(),
-    expiryYear:  integer("expiry_year").notNull(),
-    isDefault:   boolean("is_default").notNull().default(false),
-    createdAt:   text("created_at").notNull().$defaultFn(now),
-    updatedAt:   text("updated_at").notNull().$defaultFn(now).$onUpdateFn(now),
+    id:            text("id").primaryKey(),
+    name:          text("name").notNull(),
+    email:         text("email").notNull().unique(),
+    webhookUrl:    text("webhook_url").notNull(),
+    phoneNumber:   text("phone_number").notNull(),
+    originHeader:  text("origin_header").notNull(),
+    ipWhitelist:   text("ip_whitelist").notNull().default("[]"),
+    apiKey:        text("api_key").notNull().unique(),
+    webhookSecret: text("webhook_secret").notNull(),
+    createdAt:     text("created_at").notNull().$defaultFn(now),
+    updatedAt:     text("updated_at").notNull().$defaultFn(now).$onUpdateFn(now),
   },
   (t) => [
-    index("idx_pm_user_id").on(t.userId),
-    uniqueIndex("idx_pm_token_id").on(t.tokenId),
+    index("idx_merchants_email").on(t.email),
+    uniqueIndex("idx_merchants_api_key").on(t.apiKey),
   ]
 );
 
 export const transactions = pgTable(
   "transactions",
   {
-    id:              text("id").primaryKey(),
-    userId:          text("user_id")
-                       .notNull()
-                       .references(() => users.id),
-    paymentMethodId: text("payment_method_id").references(() => paymentMethods.id, {
-      onDelete: "set null",
-    }),
-    idempotencyKey:  text("idempotency_key").notNull().unique(),
-    amount:          integer("amount").notNull(),
-    currency:        text("currency", { enum: CURRENCY_CODES }).notNull(),
-    status:          text("status", { enum: TRANSACTION_STATUSES })
-                       .notNull()
-                       .default("PENDING"),
-    description:     text("description"),
-    metadata:        text("metadata"),
-    createdAt:       text("created_at").notNull().$defaultFn(now),
-    updatedAt:       text("updated_at").notNull().$defaultFn(now).$onUpdateFn(now),
+    id:             text("id").primaryKey(),
+    merchantId:     text("merchant_id")
+                      .notNull()
+                      .references(() => merchants.id, { onDelete: "cascade" }),
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+    amount:         integer("amount").notNull(),
+    currency:       text("currency", { enum: CURRENCY_CODES }).notNull(),
+    status:         text("status", { enum: TRANSACTION_STATUSES })
+                      .notNull()
+                      .default("PENDING"),
+    description:    text("description"),
+    metadata:       text("metadata"),
+    createdAt:      text("created_at").notNull().$defaultFn(now),
+    updatedAt:      text("updated_at").notNull().$defaultFn(now).$onUpdateFn(now),
   },
   (t) => [
-    index("idx_tx_user_id").on(t.userId),
+    index("idx_tx_merchant_id").on(t.merchantId),
     uniqueIndex("idx_tx_idempotency").on(t.idempotencyKey),
     index("idx_tx_status").on(t.status),
   ]
 );
 
-export const usersRelations = relations(users, ({ many }) => ({
-  paymentMethods: many(paymentMethods),
-  transactions:   many(transactions),
+export const merchantWebhookDeliveries = pgTable(
+  "merchant_webhook_deliveries",
+  {
+    id:              text("id").primaryKey(),
+    merchantId:      text("merchant_id")
+                       .notNull()
+                       .references(() => merchants.id, { onDelete: "cascade" }),
+    transactionId:   text("transaction_id").references(() => transactions.id, {
+      onDelete: "set null",
+    }),
+    event:           text("event", { enum: WEBHOOK_EVENTS }).notNull(),
+    targetUrl:       text("target_url").notNull(),
+    payload:         text("payload").notNull(),
+    status:          text("status", { enum: WEBHOOK_DELIVERY_STATUSES })
+                       .notNull()
+                       .default("PENDING"),
+    httpStatus:      integer("http_status"),
+    responseExcerpt: text("response_excerpt"),
+    errorMessage:    text("error_message"),
+    createdAt:       text("created_at").notNull().$defaultFn(now),
+    deliveredAt:     text("delivered_at"),
+  },
+  (t) => [
+    index("idx_wh_del_merchant").on(t.merchantId),
+    index("idx_wh_del_status").on(t.status),
+    index("idx_wh_del_created").on(t.createdAt),
+    index("idx_wh_del_tx").on(t.transactionId),
+  ]
+);
+
+export const transactionsRelations = relations(transactions, ({ one, many }) => ({
+  merchant: one(merchants, {
+    fields: [transactions.merchantId],
+    references: [merchants.id],
+  }),
+  webhookDeliveries: many(merchantWebhookDeliveries),
 }));
 
-export const paymentMethodsRelations = relations(paymentMethods, ({ one, many }) => ({
-  user:         one(users, { fields: [paymentMethods.userId], references: [users.id] }),
+export const merchantsRelations = relations(merchants, ({ many }) => ({
   transactions: many(transactions),
+  webhookDeliveries: many(merchantWebhookDeliveries),
 }));
 
-export const transactionsRelations = relations(transactions, ({ one }) => ({
-  user:          one(users,          { fields: [transactions.userId],          references: [users.id] }),
-  paymentMethod: one(paymentMethods, { fields: [transactions.paymentMethodId], references: [paymentMethods.id] }),
+export const merchantWebhookDeliveriesRelations = relations(merchantWebhookDeliveries, ({ one }) => ({
+  merchant: one(merchants, {
+    fields: [merchantWebhookDeliveries.merchantId],
+    references: [merchants.id],
+  }),
+  transaction: one(transactions, {
+    fields: [merchantWebhookDeliveries.transactionId],
+    references: [transactions.id],
+  }),
 }));

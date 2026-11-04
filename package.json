@@ -14,6 +14,8 @@
     "build": "bun run typecheck",
     "typecheck": "tsc --noEmit",
     "db:migrate": "bun run src/db/migrate.ts",
+    "db:seed": "bun run src/db/seed.ts",
+    "db:seed-webhooks": "bun run src/db/seed-webhooks.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"
   },

@@ -60,7 +60,7 @@ export async function runMiddleware(
   }
 
   // 4. Auth
-  const authRes = authCheck(req);
+  const authRes = await authCheck(req);
   if (authRes) {
     const res = attachRequestId(authRes, requestId);
     logDone(res);

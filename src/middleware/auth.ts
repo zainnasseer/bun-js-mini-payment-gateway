@@ -1,46 +1,55 @@
 import { jsonError } from "../lib/http";
-import { safeCompare } from "../lib/crypto";
+import {
+  attachAuthScope,
+  isAdminApiKey,
+  resolveMerchantByApiKey,
+} from "../lib/authContext";
 
 /**
- * API Key authentication middleware.
- *
- * Reads the `X-API-Key` header and compares it timing-safely against
- * the `API_KEY` environment variable.
- *
- * Only `/api/v1/*` requires an API key. Static UI, health, OpenAPI, and
- * webhooks (HMAC) are exempt.
+ * API authentication:
+ * - POST /api/v1/merchants — open registration (no key)
+ * - Other /api/v1/* — X-API-Key must match platform API_KEY (admin) or a merchant api_key
  */
 
-function requiresApiKey(pathname: string): boolean {
-  return pathname.startsWith("/api/v1/");
+function requiresApiKey(pathname: string, method: string): boolean {
+  if (!pathname.startsWith("/api/v1/")) return false;
+  if (pathname === "/api/v1/merchants" && method === "POST") return false;
+  return true;
 }
 
-/**
- * Returns null if the request is authenticated or exempt.
- * Returns a 401 Response if the key is missing or invalid.
- */
-export function authCheck(req: Request): Response | null {
+export async function authCheck(req: Request): Promise<Response | null> {
   const url = new URL(req.url);
-  if (!requiresApiKey(url.pathname)) return null;
-
-  const apiKey = process.env.API_KEY ?? "";
-
-  if (!apiKey) {
-    // In development with no API_KEY set, warn but allow through
-    if (process.env.NODE_ENV !== "production") return null;
-    console.warn("⚠️  API_KEY is not set. All requests are rejected in production.");
-    return jsonError("Server misconfiguration: API_KEY not set", 500);
+  if (!requiresApiKey(url.pathname, req.method)) {
+    attachAuthScope(req, { kind: "anonymous" });
+    return null;
   }
 
   const supplied = req.headers.get("X-API-Key") ?? "";
+  const adminKey = process.env.API_KEY?.trim() ?? "";
+
   if (!supplied) {
+    if (!adminKey && process.env.NODE_ENV !== "production") {
+      attachAuthScope(req, { kind: "anonymous" });
+      return null;
+    }
     return jsonError("Missing required header: X-API-Key", 401);
   }
 
-  // Timing-safe comparison prevents timing attacks
-  if (!safeCompare(supplied, apiKey)) {
-    return jsonError("Invalid API key", 401);
+  if (adminKey && isAdminApiKey(supplied)) {
+    attachAuthScope(req, { kind: "admin" });
+    return null;
   }
 
-  return null; // authenticated
+  const merchant = await resolveMerchantByApiKey(supplied);
+  if (merchant) {
+    attachAuthScope(req, { kind: "merchant", merchant });
+    return null;
+  }
+
+  if (!adminKey && process.env.NODE_ENV !== "production") {
+    attachAuthScope(req, { kind: "anonymous" });
+    return null;
+  }
+
+  return jsonError("Invalid API key", 401);
 }
