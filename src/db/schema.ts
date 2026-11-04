@@ -27,6 +27,8 @@ export const CURRENCY_CODES = [
 
 export const WEBHOOK_DELIVERY_STATUSES = ["PENDING", "DELIVERED", "FAILED"] as const;
 
+export const CONSOLE_ADMIN_ROLES = ["owner", "admin"] as const;
+
 export const WEBHOOK_EVENTS = [
   "transaction.created",
   "transaction.authorized",
@@ -35,6 +37,40 @@ export const WEBHOOK_EVENTS = [
   "transaction.refunded",
   "transaction.status_updated",
 ] as const;
+
+export const consoleAdmins = pgTable(
+  "console_admins",
+  {
+    id:           text("id").primaryKey(),
+    username:     text("username").notNull().unique(),
+    email:        text("email").notNull().unique(),
+    passwordHash: text("password_hash").notNull(),
+    role:         text("role", { enum: CONSOLE_ADMIN_ROLES }).notNull().default("admin"),
+    createdAt:    text("created_at").notNull().$defaultFn(now),
+  },
+  (t) => [
+    uniqueIndex("idx_console_admins_username").on(t.username),
+    uniqueIndex("idx_console_admins_email").on(t.email),
+  ]
+);
+
+export const consolePasswordChallenges = pgTable(
+  "console_password_challenges",
+  {
+    id:              text("id").primaryKey(),
+    adminId:         text("admin_id")
+                       .notNull()
+                       .references(() => consoleAdmins.id, { onDelete: "cascade" }),
+    codeHash:        text("code_hash").notNull(),
+    newPasswordHash: text("new_password_hash").notNull(),
+    expiresAt:       text("expires_at").notNull(),
+    createdAt:       text("created_at").notNull().$defaultFn(now),
+  },
+  (t) => [
+    index("idx_pwd_challenge_admin").on(t.adminId),
+    index("idx_pwd_challenge_expires").on(t.expiresAt),
+  ]
+);
 
 export const merchants = pgTable(
   "merchants",

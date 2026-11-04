@@ -51,6 +51,9 @@ export async function listWebhookDeliveries(req: Request): Promise<Response> {
     }
 
     const scope = await resolveAuthScope(req);
+    if (scope.kind === "anonymous") {
+      return jsonError("Authentication required", 401);
+    }
     if (scope.kind === "merchant") {
       if (filterMerchantId && filterMerchantId !== scope.merchant.id) {
         return jsonError("Cannot list webhook deliveries for another merchant", 403);

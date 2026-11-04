@@ -57,6 +57,28 @@ export interface UpdateMerchantPayload {
   webhook_secret?: string;
 }
 
+export interface CurrencyVolumeBreakdown {
+  currency: CurrencyCode;
+  amountMinor: number;
+  transactionCount: number;
+}
+
+export interface FilteredVolumeUsd {
+  amountUsdMinor: number;
+  currency: "USD";
+  ratesAsOf: string;
+  rateSource: string;
+  byCurrency: CurrencyVolumeBreakdown[];
+}
+
+export interface TransactionListResponse {
+  transactions: Transaction[];
+  limit: number;
+  offset: number;
+  count: number;
+  filteredVolume: FilteredVolumeUsd;
+}
+
 export interface CreateTransactionPayload {
   /** Required when using platform admin API key; ignored for merchant keys. */
   merchant_id?: string;

@@ -1,17 +1,37 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { ApiCallResult } from "./lib/api";
 import { apiCall } from "./lib/api";
 import { ResponsePanel } from "./components/ResponsePanel";
 import { TransactionsView, type TxFilters } from "./components/TransactionsView";
 import { WebhooksView, type WhFilters } from "./components/WebhooksView";
 import { MerchantsView, type MerchantScreen } from "./components/MerchantsView";
-import type { MerchantResponse, Transaction, TransactionStatus, WebhookDelivery } from "../src/types";
+import { LoginPage } from "./components/LoginPage";
+import { AdminsView, type ConsoleAdminRow } from "./components/AdminsView";
+import type {
+  FilteredVolumeUsd,
+  MerchantResponse,
+  Transaction,
+  TransactionStatus,
+  WebhookDelivery,
+} from "../src/types";
 import { applyTheme, getInitialTheme, type Theme } from "./lib/theme";
-import { IconMerchants, IconTransactions, IconWebhooks } from "./components/icons";
+import {
+  clearSession,
+  getStoredToken,
+  getStoredUser,
+  saveSession,
+  type ConsoleUser,
+} from "./lib/session";
+import { IconAdmins, IconMerchants, IconTransactions, IconWebhooks } from "./components/icons";
+import {
+  clampInspectorPanelWidth,
+  getInitialInspectorPanelWidth,
+  INSPECTOR_PANEL_MIN_W,
+  inspectorPanelMaxWidth,
+  persistInspectorPanelWidth,
+} from "./lib/inspectorPanel";
 
-type View = "merchants" | "transactions" | "webhooks";
-
-const LS_ADMIN_KEY = "pg_admin_api_key";
+type View = "merchants" | "transactions" | "webhooks" | "admins";
 
 const emptyForm = {
   name: "",
@@ -25,11 +45,12 @@ const emptyForm = {
 };
 
 export function App() {
+  const [authReady, setAuthReady] = useState(false);
+  const [token, setToken] = useState(() => getStoredToken());
+  const [user, setUser] = useState<ConsoleUser | null>(() => getStoredUser());
   const [view, setView] = useState<View>("merchants");
   const [theme, setTheme] = useState<Theme>(() => getInitialTheme());
-  const [adminKey, setAdminKey] = useState(
-    () => (typeof localStorage !== "undefined" ? localStorage.getItem(LS_ADMIN_KEY) : null) ?? ""
-  );
+  const [consoleAdmins, setConsoleAdmins] = useState<ConsoleAdminRow[]>([]);
 
   const [merchants, setMerchants] = useState<MerchantResponse[]>([]);
   const [merchantScreen, setMerchantScreen] = useState<MerchantScreen>("list");
@@ -40,6 +61,7 @@ export function App() {
   );
 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [filteredVolumeUsd, setFilteredVolumeUsd] = useState<FilteredVolumeUsd | null>(null);
   const [txFilters, setTxFilters] = useState<TxFilters>({
     merchantId: "",
     dateFrom: "",
@@ -47,6 +69,7 @@ export function App() {
     status: "",
   });
   const [selectedTxId, setSelectedTxId] = useState("");
+  const [lookupTx, setLookupTx] = useState<Transaction | null>(null);
 
   const [webhookDeliveries, setWebhookDeliveries] = useState<WebhookDelivery[]>([]);
   const [whFilters, setWhFilters] = useState<WhFilters>({
@@ -60,14 +83,88 @@ export function App() {
 
   const [lastResult, setLastResult] = useState<ApiCallResult | null>(null);
   const [history, setHistory] = useState<ApiCallResult[]>([]);
+  const [inspectorWidth, setInspectorWidth] = useState(() => getInitialInspectorPanelWidth());
+  const inspectorWidthRef = useRef(inspectorWidth);
+  inspectorWidthRef.current = inspectorWidth;
 
   const selected = merchants.find((m) => m.id === selectedId) ?? null;
 
-  const adminClient = useMemo(() => ({ apiKey: adminKey }), [adminKey]);
+  const authClient = useMemo(() => ({ token }), [token]);
 
   useEffect(() => {
-    localStorage.setItem(LS_ADMIN_KEY, adminKey);
-  }, [adminKey]);
+    function onResize() {
+      setInspectorWidth((w) => clampInspectorPanelWidth(w));
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const onInspectorResizePointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = inspectorWidthRef.current;
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("inspector-resizing");
+
+    const onMove = (ev: PointerEvent) => {
+      const delta = startX - ev.clientX;
+      setInspectorWidth(clampInspectorPanelWidth(startW + delta));
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (handle.hasPointerCapture(ev.pointerId)) {
+        handle.releasePointerCapture(ev.pointerId);
+      }
+      document.body.classList.remove("inspector-resizing");
+      persistInspectorPanelWidth(inspectorWidthRef.current);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function bootstrap() {
+      if (!token) {
+        setAuthReady(true);
+        return;
+      }
+      const r = await apiCall({ method: "GET", path: "/api/v1/auth/me" }, { method: "GET" }, { token });
+      if (cancelled) return;
+      if (r.body.success && r.body.data && typeof r.body.data === "object" && "username" in r.body.data) {
+        setUser(r.body.data as ConsoleUser);
+      } else {
+        clearSession();
+        setToken("");
+        setUser(null);
+      }
+      setAuthReady(true);
+    }
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  function handleLogin(nextToken: string, nextUser: ConsoleUser) {
+    saveSession(nextToken, nextUser);
+    setToken(nextToken);
+    setUser(nextUser);
+  }
+
+  function handleLogout() {
+    clearSession();
+    setToken("");
+    setUser(null);
+    setMerchants([]);
+    setTransactions([]);
+    setWebhookDeliveries([]);
+  }
 
   function setColorTheme(next: Theme) {
     setTheme(next);
@@ -88,12 +185,21 @@ export function App() {
 
   const refreshMerchants = useCallback(async () => {
     const r = await record(
-      await apiCall({ method: "GET", path: "/api/v1/merchants" }, { method: "GET" }, adminClient)
+      await apiCall({ method: "GET", path: "/api/v1/merchants" }, { method: "GET" }, authClient)
     );
     if (r.body.success && Array.isArray(r.body.data)) {
       setMerchants(r.body.data as MerchantResponse[]);
     }
-  }, [adminClient, record]);
+  }, [authClient, record]);
+
+  const refreshConsoleAdmins = useCallback(async () => {
+    const r = await record(
+      await apiCall({ method: "GET", path: "/api/v1/admins" }, { method: "GET" }, authClient)
+    );
+    if (r.body.success && Array.isArray(r.body.data)) {
+      setConsoleAdmins(r.body.data as ConsoleAdminRow[]);
+    }
+  }, [authClient, record]);
 
   const apiKeyForMerchant = useCallback(
     (merchantId: string) => merchants.find((m) => m.id === merchantId)?.apiKey ?? "",
@@ -108,19 +214,23 @@ export function App() {
     if (f.dateTo) params.set("to", f.dateTo);
     if (f.status) params.set("status", f.status);
 
-    const scopedKey = f.merchantId ? apiKeyForMerchant(f.merchantId) : adminKey;
     const path = `/api/v1/transactions?${params.toString()}`;
     const r = await record(
-      await apiCall({ method: "GET", path }, { method: "GET" }, { apiKey: scopedKey })
+      await apiCall({ method: "GET", path }, { method: "GET" }, authClient)
     );
     if (r.body.success && r.body.data && typeof r.body.data === "object" && "transactions" in r.body.data) {
-      setTransactions((r.body.data as { transactions: Transaction[] }).transactions);
+      const data = r.body.data as {
+        transactions: Transaction[];
+        filteredVolume?: FilteredVolumeUsd;
+      };
+      setTransactions(data.transactions);
+      setFilteredVolumeUsd(data.filteredVolume ?? null);
     }
-  }, [txFilters, apiKeyForMerchant, adminKey, record]);
+  }, [txFilters, authClient, record]);
 
   useEffect(() => {
-    void refreshMerchants();
-  }, []);
+    if (token && user) void refreshMerchants();
+  }, [token, user]);
 
   useEffect(() => {
     if (view === "merchants") {
@@ -139,22 +249,23 @@ export function App() {
       if (f.status) params.set("status", f.status);
       if (f.event.trim()) params.set("event", f.event.trim());
 
-      const scopedKey = f.merchantId ? apiKeyForMerchant(f.merchantId) : adminKey;
       const path = `/api/v1/webhook-deliveries?${params.toString()}`;
       const r = await record(
-        await apiCall({ method: "GET", path }, { method: "GET" }, { apiKey: scopedKey })
+        await apiCall({ method: "GET", path }, { method: "GET" }, authClient)
       );
       if (r.body.success && r.body.data && typeof r.body.data === "object" && "deliveries" in r.body.data) {
         setWebhookDeliveries((r.body.data as { deliveries: WebhookDelivery[] }).deliveries);
       }
     },
-    [whFilters, apiKeyForMerchant, adminKey, record]
+    [whFilters, authClient, record]
   );
 
   useEffect(() => {
+    if (!token || !user) return;
     if (view === "transactions") void refreshTransactions();
     if (view === "webhooks") void refreshWebhookDeliveries();
-  }, [view]);
+    if (view === "admins") void refreshConsoleAdmins();
+  }, [view, token, user]);
 
   function loadMerchant(m: MerchantResponse) {
     setSelectedId(m.id);
@@ -226,7 +337,7 @@ export function App() {
             webhook_secret: form.webhookSecret,
           }),
         },
-        { apiKey: form.apiKey || adminKey }
+        authClient
       )
     );
     if (r.body.success && r.body.data) {
@@ -242,7 +353,7 @@ export function App() {
       await apiCall(
         { method: "DELETE", path: `/api/v1/merchants/${selectedId}` },
         { method: "DELETE" },
-        adminClient
+        authClient
       )
     );
     setSelectedId("");
@@ -251,10 +362,56 @@ export function App() {
     await refreshMerchants();
   }
 
+  function txById(txId: string): Transaction | null {
+    if (lookupTx?.id === txId) return lookupTx;
+    return transactions.find((t) => t.id === txId) ?? null;
+  }
+
   function merchantForTx(txId: string): MerchantResponse | null {
-    const tx = transactions.find((t) => t.id === txId);
+    const tx = txById(txId);
     if (!tx) return null;
     return merchants.find((m) => m.id === tx.merchantId) ?? null;
+  }
+
+  async function reloadLookupTx() {
+    if (!lookupTx) return;
+    const r = await apiCall(
+      { method: "GET", path: `/api/v1/transactions/${lookupTx.id}` },
+      { method: "GET" },
+      authClient
+    );
+    if (r.body.success && r.body.data && typeof r.body.data === "object" && "id" in r.body.data) {
+      setLookupTx(r.body.data as Transaction);
+    }
+  }
+
+  async function lookupTransactionById(id: string): Promise<string | null> {
+    const trimmed = id.trim();
+    if (!trimmed) return "Enter a transaction ID";
+    const r = await record(
+      await apiCall(
+        { method: "GET", path: `/api/v1/transactions/${encodeURIComponent(trimmed)}` },
+        { method: "GET" },
+        authClient
+      )
+    );
+    if (!r.body.success || !r.body.data || typeof r.body.data !== "object" || !("id" in r.body.data)) {
+      return r.body.error ?? "Transaction not found";
+    }
+    const tx = r.body.data as Transaction;
+    setLookupTx(tx);
+    setSelectedTxId(tx.id);
+    return null;
+  }
+
+  function selectTransaction(id: string) {
+    setLookupTx(null);
+    setSelectedTxId(id);
+  }
+
+  function clearTransactionLookup() {
+    setLookupTx(null);
+    setSelectedTxId("");
   }
 
   async function patchStatus(status: TransactionStatus) {
@@ -269,6 +426,7 @@ export function App() {
       )
     );
     await refreshTransactions();
+    await reloadLookupTx();
   }
 
   async function refund() {
@@ -283,10 +441,86 @@ export function App() {
       )
     );
     await refreshTransactions();
+    await reloadLookupTx();
+  }
+
+  async function createConsoleAdmin(
+    username: string,
+    email: string,
+    password: string
+  ): Promise<string | null> {
+    const r = await record(
+      await apiCall(
+        { method: "POST", path: "/api/v1/admins" },
+        { method: "POST", body: JSON.stringify({ username, email, password, role: "admin" }) },
+        authClient
+      )
+    );
+    if (!r.body.success) return r.body.error ?? "Could not create admin";
+    return null;
+  }
+
+  async function requestPasswordChange(currentPassword: string, newPassword: string) {
+    const r = await record(
+      await apiCall(
+        { method: "POST", path: "/api/v1/auth/password/request-change" },
+        {
+          method: "POST",
+          body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+        },
+        authClient
+      )
+    );
+    if (!r.body.success) {
+      return { error: r.body.error ?? "Could not start password change" };
+    }
+    const data = r.body.data as {
+      message?: string;
+      devAuthorizationCode?: string;
+    };
+    return {
+      error: null,
+      message: data.message,
+      devCode: data.devAuthorizationCode,
+    };
+  }
+
+  async function confirmPasswordChange(code: string) {
+    const r = await record(
+      await apiCall(
+        { method: "POST", path: "/api/v1/auth/password/confirm" },
+        { method: "POST", body: JSON.stringify({ code }) },
+        authClient
+      )
+    );
+    if (!r.body.success) {
+      return { error: r.body.error ?? "Could not confirm password change" };
+    }
+    const data = r.body.data as { message?: string };
+    return { error: null, message: data.message ?? "Password updated." };
+  }
+
+  async function deleteConsoleAdmin(id: string): Promise<string | null> {
+    const r = await record(
+      await apiCall({ method: "DELETE", path: `/api/v1/admins/${id}` }, { method: "DELETE" }, authClient)
+    );
+    if (!r.body.success) return r.body.error ?? "Could not remove admin";
+    return null;
+  }
+
+  if (!authReady) {
+    return <div className="login-shell login-shell--loading muted">Loading…</div>;
+  }
+
+  if (!token || !user) {
+    return <LoginPage onSuccess={handleLogin} />;
   }
 
   return (
-    <div className="shell">
+    <div
+      className="shell"
+      style={{ ["--inspector-w" as string]: `${inspectorWidth}px` }}
+    >
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark" aria-hidden>
@@ -303,6 +537,7 @@ export function App() {
               ["merchants", "Merchants", IconMerchants],
               ["transactions", "Transactions", IconTransactions],
               ["webhooks", "Webhooks", IconWebhooks],
+              ["admins", "Admins", IconAdmins],
             ] as const
           ).map(([id, label, Icon]) => (
             <button
@@ -335,15 +570,15 @@ export function App() {
               Dark
             </button>
           </div>
-          <label className="sidebar-field">
-            Admin API key
-            <input
-              type="password"
-              placeholder="Optional — platform scope"
-              value={adminKey}
-              onChange={(e) => setAdminKey(e.target.value)}
-            />
-          </label>
+          <div className="sidebar-user">
+            <span className="sidebar-user__name">{user.username}</span>
+            <span className="muted sidebar-user__role">
+              {user.email} · {user.role === "owner" ? "Owner" : "Admin"}
+            </span>
+            <button type="button" className="btn sm sidebar-logout" onClick={handleLogout}>
+              Sign out
+            </button>
+          </div>
           <div className="sidebar-links">
             <a href="/openapi.yaml" target="_blank" rel="noreferrer">
               OpenAPI
@@ -382,6 +617,7 @@ export function App() {
           <TransactionsView
             merchants={merchants}
             transactions={transactions}
+            filteredVolumeUsd={filteredVolumeUsd}
             filters={txFilters}
             onFiltersChange={(patch) => setTxFilters((f) => ({ ...f, ...patch }))}
             onApplyFilters={() => void refreshTransactions()}
@@ -391,9 +627,29 @@ export function App() {
               void refreshTransactions(empty);
             }}
             selectedTxId={selectedTxId}
-            onSelectTx={setSelectedTxId}
+            focusedTransaction={
+              lookupTx ?? transactions.find((t) => t.id === selectedTxId) ?? null
+            }
+            lookupActive={lookupTx !== null}
+            onSelectTx={selectTransaction}
+            onLookupById={lookupTransactionById}
+            onClearLookup={clearTransactionLookup}
             onPatchStatus={(s) => void patchStatus(s)}
             onRefund={() => void refund()}
+          />
+        )}
+
+        {view === "admins" && (
+          <AdminsView
+            admins={consoleAdmins}
+            currentUserId={user.id}
+            currentRole={user.role}
+            currentEmail={user.email}
+            onRefresh={() => void refreshConsoleAdmins()}
+            onCreate={createConsoleAdmin}
+            onDelete={deleteConsoleAdmin}
+            onRequestPasswordChange={requestPasswordChange}
+            onConfirmPasswordChange={confirmPasswordChange}
           />
         )}
 
@@ -422,9 +678,21 @@ export function App() {
         </div>
       </main>
 
-      <aside className="panel-right">
-        <ResponsePanel result={lastResult} history={history} onSelect={setLastResult} />
-      </aside>
+      <div className="panel-right-wrap">
+        <div
+          className="panel-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize API inspector panel"
+          aria-valuemin={INSPECTOR_PANEL_MIN_W}
+          aria-valuemax={inspectorPanelMaxWidth()}
+          aria-valuenow={inspectorWidth}
+          onPointerDown={onInspectorResizePointerDown}
+        />
+        <aside className="panel-right">
+          <ResponsePanel result={lastResult} history={history} onSelect={setLastResult} />
+        </aside>
+      </div>
     </div>
   );
 }

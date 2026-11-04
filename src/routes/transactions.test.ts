@@ -74,9 +74,34 @@ describe("GET /transactions", () => {
     });
     const res = await listTransactions(listReq);
     expect(res.status).toBe(200);
-    const { data } = await json<ApiResponse<{ transactions: Transaction[] }>>(res);
+    const { data } = await json<
+      ApiResponse<{ transactions: Transaction[]; filteredVolume: { amountUsdMinor: number } }>
+    >(res);
     expect(data!.transactions.length).toBeGreaterThan(0);
     expect(data!.transactions.every((t) => t.merchantId === merchant.id)).toBe(true);
+    expect(data!.filteredVolume.amountUsdMinor).toBeGreaterThan(0);
+  });
+
+  test("filtered volume converts mixed currencies to USD", async () => {
+    const merchant = await seedMerchant("tx-volume-fx");
+    await createTransaction(
+      txPost(merchant, { amount: 100, currency: "USD" }, generateIdempotencyKey())
+    );
+    await createTransaction(
+      txPost(merchant, { amount: 100, currency: "EUR" }, generateIdempotencyKey())
+    );
+    const listReq = new Request("http://localhost/api/v1/transactions", {
+      method: "GET",
+      headers: { "X-API-Key": merchant.apiKey },
+    });
+    const res = await listTransactions(listReq);
+    const { data } = await json<
+      ApiResponse<{ filteredVolume: { amountUsdMinor: number; currency: string } }>
+    >(res);
+    expect(data!.filteredVolume.currency).toBe("USD");
+    expect(data!.filteredVolume.amountUsdMinor).toBeGreaterThan(100);
+    expect(data!.filteredVolume.rateSource).toBeTruthy();
+    expect(data!.filteredVolume.byCurrency.length).toBeGreaterThanOrEqual(2);
   });
 });
 

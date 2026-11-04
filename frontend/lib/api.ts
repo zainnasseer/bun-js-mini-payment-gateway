@@ -15,19 +15,24 @@ export type ApiCallResult = {
 };
 
 export type ApiClientOptions = {
-  apiKey: string;
+  /** Console session JWT (preferred for the developer UI). */
+  token?: string;
+  /** Legacy platform / merchant API key. */
+  apiKey?: string;
 };
 
 export async function apiCall(
   meta: CallMeta,
   init: RequestInit,
-  options: ApiClientOptions
+  options: ApiClientOptions = {}
 ): Promise<ApiCallResult> {
   const headers = new Headers(init.headers);
   if (!headers.has("Content-Type") && init.body) {
     headers.set("Content-Type", "application/json");
   }
-  if (options.apiKey) {
+  if (options.token) {
+    headers.set("Authorization", `Bearer ${options.token}`);
+  } else if (options.apiKey) {
     headers.set("X-API-Key", options.apiKey);
   }
 

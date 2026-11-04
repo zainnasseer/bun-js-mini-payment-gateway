@@ -8,6 +8,7 @@ import {
   updateMerchant,
   deleteMerchant,
 } from "./merchants";
+import { attachAuthScope } from "../lib/authContext";
 import type { ApiResponse, MerchantResponse } from "../types";
 
 beforeAll(async () => {
@@ -40,7 +41,9 @@ describe("POST /merchants", () => {
 describe("GET /merchants", () => {
   test("returns list of merchants", async () => {
     await createMerchant(post("/api/v1/merchants", { ...samplePayload, email: "list@acme.example" }));
-    const res = await listMerchants(get("/api/v1/merchants"));
+    const listReq = get("/api/v1/merchants");
+    attachAuthScope(listReq, { kind: "admin" });
+    const res = await listMerchants(listReq);
     expect(res.status).toBe(200);
     const { data } = await json<ApiResponse<MerchantResponse[]>>(res);
     expect(Array.isArray(data)).toBe(true);
@@ -57,7 +60,8 @@ describe("PATCH /merchants/:id", () => {
       "PATCH",
       `/api/v1/merchants/${created!.id}`,
       { id: created!.id },
-      { name: "Updated Name" }
+      { name: "Updated Name" },
+      { "X-API-Key": created!.apiKey }
     );
     const res = await updateMerchant(req as Request & { params: { id: string } });
     expect(res.status).toBe(200);
@@ -73,6 +77,7 @@ describe("DELETE /merchants/:id", () => {
     );
     const { data: created } = await json<ApiResponse<MerchantResponse>>(createRes);
     const delReq = reqWithParams("DELETE", `/api/v1/merchants/${created!.id}`, { id: created!.id });
+    attachAuthScope(delReq, { kind: "admin" });
     expect((await deleteMerchant(delReq as Request & { params: { id: string } })).status).toBe(200);
   });
 });

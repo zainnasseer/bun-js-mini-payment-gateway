@@ -29,6 +29,20 @@
       "when": 1793816000000,
       "tag": "0003_merchant_webhook_deliveries",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793817000000,
+      "tag": "0004_console_admins",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793818000000,
+      "tag": "0005_console_admin_email_password_challenges",
+      "breakpoints": true
     }
   ]
 }

@@ -4,7 +4,7 @@ import { merchants } from "../db/schema";
 import { generateId, generateSecureToken } from "../lib/crypto";
 import { firstRow } from "../lib/dbQuery";
 import { isUniqueViolation } from "../lib/dbErrors";
-import { resolveAuthScope } from "../lib/authContext";
+import { assertPlatformAdmin, resolveAuthScope } from "../lib/authContext";
 import {
   jsonOk,
   jsonCreated,
@@ -64,27 +64,18 @@ function validateIpList(ips: string[] | undefined): string | null {
   return null;
 }
 
-async function assertMerchantAdmin(req: Request): Promise<Response | null> {
-  const scope = await resolveAuthScope(req);
-  if (scope.kind === "admin" || scope.kind === "anonymous") return null;
-  if (scope.kind === "merchant") {
-    return jsonError("Admin API key required for this operation", 403);
-  }
-  return jsonError("Forbidden", 403);
-}
-
 async function assertMerchantSelfOrAdmin(
   req: Request,
   merchantId: string
 ): Promise<Response | null> {
   const scope = await resolveAuthScope(req);
-  if (scope.kind === "admin" || scope.kind === "anonymous") return null;
+  if (scope.kind === "admin") return null;
   if (scope.kind === "merchant" && scope.merchant.id === merchantId) return null;
   return jsonError("Forbidden", 403);
 }
 
 export async function listMerchants(req: Request): Promise<Response> {
-  const denied = await assertMerchantAdmin(req);
+  const denied = await assertPlatformAdmin(req);
   if (denied) return denied;
   try {
     const rows = await getDb().select().from(merchants).orderBy(merchants.createdAt);
@@ -221,7 +212,7 @@ export async function updateMerchant(
 export async function deleteMerchant(
   req: Request & { params: { id: string } }
 ): Promise<Response> {
-  const denied = await assertMerchantAdmin(req);
+  const denied = await assertPlatformAdmin(req);
   if (denied) return denied;
   try {
     const db = getDb();

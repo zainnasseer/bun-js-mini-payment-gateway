@@ -14,9 +14,13 @@ import {
 } from "./routes/transactions";
 import { handleProcessorWebhook } from "./routes/webhooks";
 import { listWebhookDeliveries } from "./routes/webhookDeliveries";
+import { loginConsoleAdmin, getConsoleSession } from "./routes/auth";
+import { requestPasswordChange, confirmPasswordChange } from "./routes/passwordChange";
+import { listConsoleAdmins, createConsoleAdmin, deleteConsoleAdmin } from "./routes/admins";
 import { getDemoConsoleConfig } from "./routes/publicDemo";
 import { runMiddleware } from "./middleware";
 import { jsonOk, jsonError } from "./lib/http";
+import { startFxRatesRefreshLoop } from "./lib/fxLive";
 import index from "../index.html";
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -69,6 +73,27 @@ const server = Bun.serve({
       GET: withMiddleware(() => getDemoConsoleConfig()),
     },
 
+    "/api/v1/auth/login": {
+      POST: withMiddleware(loginConsoleAdmin),
+    },
+    "/api/v1/auth/me": {
+      GET: withMiddleware(getConsoleSession),
+    },
+    "/api/v1/auth/password/request-change": {
+      POST: withMiddleware(requestPasswordChange),
+    },
+    "/api/v1/auth/password/confirm": {
+      POST: withMiddleware(confirmPasswordChange),
+    },
+
+    "/api/v1/admins": {
+      GET:  withMiddleware(listConsoleAdmins),
+      POST: withMiddleware(createConsoleAdmin),
+    },
+    "/api/v1/admins/:id": {
+      DELETE: withMiddleware(deleteConsoleAdmin),
+    },
+
     "/api/v1/merchants": {
       GET:  withMiddleware(listMerchants),
       POST: withMiddleware(createMerchant),
@@ -112,6 +137,8 @@ const server = Bun.serve({
 });
 
 serverRef = server;
+
+startFxRatesRefreshLoop();
 
 console.log(`🚀 Payment Gateway  →  http://localhost:${server.port}`);
 console.log(`   UI:    http://localhost:${server.port}/`);

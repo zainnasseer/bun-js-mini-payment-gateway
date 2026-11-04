@@ -3,10 +3,14 @@ import { getDb } from "../db/database";
 import { merchants } from "../db/schema";
 import { firstRow } from "./dbQuery";
 import { safeCompare } from "./crypto";
+import { verifyConsoleSessionToken, type ConsoleSession } from "./consoleSession";
+import { jsonError } from "./http";
 import type { Merchant } from "../types";
 
+export type ConsoleAuth = Pick<ConsoleSession, "adminId" | "username" | "role">;
+
 export type AuthScope =
-  | { kind: "admin" }
+  | { kind: "admin"; console?: ConsoleAuth }
   | { kind: "merchant"; merchant: Merchant }
   | { kind: "anonymous" };
 
@@ -22,10 +26,34 @@ export function getAuthScope(req: Request): AuthScope {
   return (req as RequestWithAuth)[AUTH_SCOPE] ?? { kind: "anonymous" };
 }
 
-/** Uses attached scope from middleware, or resolves X-API-Key (for direct handler tests). */
+function parseBearerToken(req: Request): string | null {
+  const header = req.headers.get("Authorization") ?? "";
+  const m = /^Bearer\s+(.+)$/i.exec(header);
+  return m?.[1]?.trim() || null;
+}
+
+function adminScopeFromBearer(req: Request): AuthScope | null {
+  const token = parseBearerToken(req);
+  if (!token) return null;
+  const session = verifyConsoleSessionToken(token);
+  if (!session) return null;
+  return {
+    kind: "admin",
+    console: {
+      adminId: session.adminId,
+      username: session.username,
+      role: session.role,
+    },
+  };
+}
+
+/** Uses attached scope from middleware, or resolves Bearer / X-API-Key (for direct handler tests). */
 export async function resolveAuthScope(req: Request): Promise<AuthScope> {
   const attached = getAuthScope(req);
   if (attached.kind !== "anonymous") return attached;
+
+  const fromBearer = adminScopeFromBearer(req);
+  if (fromBearer) return fromBearer;
 
   const supplied = req.headers.get("X-API-Key") ?? "";
   if (!supplied) return { kind: "anonymous" };
@@ -36,6 +64,12 @@ export async function resolveAuthScope(req: Request): Promise<AuthScope> {
   if (merchant) return { kind: "merchant", merchant };
 
   return { kind: "anonymous" };
+}
+
+export async function assertPlatformAdmin(req: Request): Promise<Response | null> {
+  const scope = await resolveAuthScope(req);
+  if (scope.kind === "admin") return null;
+  return jsonError("Platform admin authentication required", 401);
 }
 
 export async function resolveMerchantByApiKey(apiKey: string): Promise<Merchant | null> {

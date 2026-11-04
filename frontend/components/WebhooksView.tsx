@@ -1,5 +1,11 @@
 import type { ReactNode } from "react";
+import { CollapsibleSection } from "./CollapsibleSection";
+import { CollapsibleTxCard } from "./CollapsibleTxCard";
+import { LazyList } from "./LazyList";
 import { Select } from "./Select";
+
+const WH_LIST_INITIAL = 4;
+const WH_LIST_STEP = 12;
 import type {
   MerchantResponse,
   WebhookDelivery,
@@ -106,17 +112,21 @@ export function WebhooksView({
       </header>
 
       <section className="tx-toolbar glass">
-        <div className="tx-toolbar__head">
-          <h3>Filters</h3>
-          <div className="btn-row tx-toolbar__actions">
-            <button type="button" className="btn primary sm" onClick={onApplyFilters}>
-              Apply filters
-            </button>
-            <button type="button" className="btn sm" onClick={onClearFilters}>
-              Clear
-            </button>
-          </div>
-        </div>
+        <CollapsibleSection
+          variant="inline-head"
+          title="Filters"
+          defaultOpen
+          actions={
+            <div className="btn-row tx-toolbar__actions">
+              <button type="button" className="btn primary sm" onClick={onApplyFilters}>
+                Apply filters
+              </button>
+              <button type="button" className="btn sm" onClick={onClearFilters}>
+                Clear
+              </button>
+            </div>
+          }
+        >
         <div className="tx-filters wh-filters">
           <label>
             Merchant
@@ -171,6 +181,7 @@ export function WebhooksView({
             />
           </label>
         </div>
+        </CollapsibleSection>
       </section>
 
       <div className="stats">
@@ -190,38 +201,41 @@ export function WebhooksView({
 
       <div className={`wh-layout${selected ? " wh-layout--with-detail" : ""}`}>
         <section className="glass tx-list-panel">
-          <div className="tx-list-panel__head">
-            <h3>Delivery log</h3>
-            <span className="muted">{deliveries.length} record(s)</span>
-          </div>
+          <CollapsibleSection title="Delivery log" count={deliveries.length} defaultOpen>
           {deliveries.length === 0 ? (
             <div className="tx-empty">
               <p>No webhook deliveries match these filters.</p>
               <p className="muted">Run bun run db:seed-webhooks or create transactions to generate logs.</p>
             </div>
           ) : (
-            <div className="tx-list">
-              {deliveries.map((d) => (
-                <button
-                  key={d.id}
-                  type="button"
-                  className={selectedId === d.id ? "tx-card selected" : "tx-card"}
-                  onClick={() => onSelect(d.id)}
+            <LazyList
+              items={deliveries}
+              initialCount={WH_LIST_INITIAL}
+              step={WH_LIST_STEP}
+              className="tx-list"
+              getKey={(d) => d.id}
+              renderItem={(d) => (
+                <CollapsibleTxCard
+                  selected={selectedId === d.id}
+                  onSelect={() => onSelect(d.id)}
+                  summary={
+                    <>
+                      <span className="wh-event">{d.event}</span>
+                      <span className={statusClass(d.status as WebhookDeliveryStatus)}>{d.status}</span>
+                    </>
+                  }
                 >
-                  <div className="tx-card__main">
-                    <span className="wh-event">{d.event}</span>
-                    <span className={statusClass(d.status as WebhookDeliveryStatus)}>{d.status}</span>
-                  </div>
                   <div className="tx-card__meta">
                     <span>{merchantName(merchants, d.merchantId)}</span>
                     <time dateTime={d.createdAt}>{formatWhen(d.createdAt)}</time>
                     {d.httpStatus != null && <span>HTTP {d.httpStatus}</span>}
                   </div>
                   <p className="wh-url muted">{d.targetUrl}</p>
-                </button>
-              ))}
-            </div>
+                </CollapsibleTxCard>
+              )}
+            />
           )}
+          </CollapsibleSection>
         </section>
 
         {selected && (

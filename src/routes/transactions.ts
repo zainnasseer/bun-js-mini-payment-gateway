@@ -17,6 +17,7 @@ import { queueMerchantWebhook } from "../lib/merchantWebhook";
 import { isUniqueViolation } from "../lib/dbErrors";
 import { firstRow } from "../lib/dbQuery";
 import { parseTransactionMetadata } from "../lib/metadata";
+import { buildFilteredVolumeUsd } from "../lib/fx";
 import type { CreateTransactionPayload, TransactionStatus } from "../types";
 
 const ALLOWED_TRANSITIONS: Record<TransactionStatus, TransactionStatus[]> = {
@@ -33,7 +34,7 @@ async function resolveMerchantIdForWrite(
 ): Promise<string | Response> {
   const scope = await resolveAuthScope(req);
   if (scope.kind === "merchant") return scope.merchant.id;
-  if (scope.kind === "admin" || scope.kind === "anonymous") {
+  if (scope.kind === "admin") {
     if (!body.merchant_id?.trim()) {
       return jsonError("merchant_id is required when using the platform admin API key", 422);
     }
@@ -51,7 +52,7 @@ function parseDateFilter(value: string | null, endOfDay: boolean): string | null
 
 async function canAccessMerchant(req: Request, merchantId: string): Promise<boolean> {
   const scope = await resolveAuthScope(req);
-  if (scope.kind === "admin" || scope.kind === "anonymous") return true;
+  if (scope.kind === "admin") return true;
   if (scope.kind === "merchant") return scope.merchant.id === merchantId;
   return false;
 }
@@ -75,6 +76,9 @@ export async function listTransactions(req: Request): Promise<Response> {
     }
 
     const scope = await resolveAuthScope(req);
+    if (scope.kind === "anonymous") {
+      return jsonError("Authentication required", 401);
+    }
     if (scope.kind === "merchant") {
       if (filterMerchantId && filterMerchantId !== scope.merchant.id) {
         return jsonError("Cannot list transactions for another merchant", 403);
@@ -94,15 +98,32 @@ export async function listTransactions(req: Request): Promise<Response> {
     if (fromIso) conditions.push(gte(transactions.createdAt, fromIso));
     if (toIso) conditions.push(lte(transactions.createdAt, toIso));
 
+    const whereClause = conditions.length
+      ? and(...(conditions as [typeof conditions[0], ...typeof conditions]))
+      : undefined;
+
     const results = await getDb()
       .select()
       .from(transactions)
-      .where(conditions.length ? and(...(conditions as [typeof conditions[0], ...typeof conditions])) : undefined)
+      .where(whereClause)
       .orderBy(desc(transactions.createdAt))
       .limit(limit)
       .offset(offset);
 
-    return jsonOk({ transactions: results, limit, offset, count: results.length });
+    const volumeRows = await getDb()
+      .select({ amount: transactions.amount, currency: transactions.currency })
+      .from(transactions)
+      .where(whereClause);
+
+    const filteredVolume = await buildFilteredVolumeUsd(volumeRows);
+
+    return jsonOk({
+      transactions: results,
+      limit,
+      offset,
+      count: results.length,
+      filteredVolume,
+    });
   } catch (err) {
     return jsonInternalError(err);
   }

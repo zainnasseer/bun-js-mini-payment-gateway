@@ -1,4 +1,8 @@
 import type { MerchantResponse } from "../../src/types";
+import { LazyList } from "./LazyList";
+
+const MERCHANT_LIST_INITIAL = 6;
+const MERCHANT_LIST_STEP = 10;
 
 export type MerchantScreen = "list" | "create" | "edit";
 
@@ -175,26 +179,29 @@ export function MerchantsView({
               </button>
             </div>
           ) : (
-            <ul className="merchant-list">
-              {merchants.map((m) => (
-                <li key={m.id}>
-                  <button
-                    type="button"
-                    className="merchant-card"
-                    onClick={() => onSelectMerchant(m)}
-                  >
-                    <span className="avatar" aria-hidden>
-                      {m.name.trim().charAt(0).toUpperCase() || "?"}
-                    </span>
-                    <div className="merchant-card__body">
-                      <strong>{m.name}</strong>
-                      <span>{m.email}</span>
-                    </div>
-                    <code className="mono merchant-card__id">{m.id.slice(0, 8)}…</code>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <LazyList
+              items={merchants}
+              initialCount={MERCHANT_LIST_INITIAL}
+              step={MERCHANT_LIST_STEP}
+              className="merchant-list"
+              getKey={(m) => m.id}
+              renderItem={(m) => (
+                <button
+                  type="button"
+                  className="merchant-card"
+                  onClick={() => onSelectMerchant(m)}
+                >
+                  <span className="avatar" aria-hidden>
+                    {m.name.trim().charAt(0).toUpperCase() || "?"}
+                  </span>
+                  <div className="merchant-card__body">
+                    <strong>{m.name}</strong>
+                    <span>{m.email}</span>
+                  </div>
+                  <code className="mono merchant-card__id">{m.id.slice(0, 8)}…</code>
+                </button>
+              )}
+            />
           )}
         </div>
       </>
